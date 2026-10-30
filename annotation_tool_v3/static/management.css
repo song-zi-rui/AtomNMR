@@ -1,0 +1,52 @@
+#manageOpen{border-color:#467c70;color:#24584b;font-weight:600}
+#managementDialog{width:min(1100px,96vw);height:min(850px,92vh);max-height:92vh;max-width:96vw;padding:0;overflow:hidden;font-size:16px}
+#managementDialog[open]{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto}
+.management-top{padding:16px 22px 12px;border-bottom:1px solid #e0e9e5;background:#fff}
+.management-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.management-head h2{margin:0;font-size:22px}
+.management-head button{border:0;font-size:25px;padding:0 9px}
+.management-context{display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin-top:10px}
+#manageRecord{flex:1;min-width:180px;margin:0;color:#697d76;font-size:13px;overflow-wrap:anywhere}
+.management-context label{flex:2;min-width:260px;margin:0;font-size:13px}
+.management-context select{font-size:14px}
+.management-nav{display:flex;gap:4px;padding:9px 18px;background:#f3f7f5;border-bottom:1px solid #dce6e1;overflow-x:auto}
+.management-nav button{flex:1;border-color:transparent;background:transparent;font-size:15px;padding:9px 12px}
+.management-nav button[aria-selected=true]{background:white;border-color:#abcaba;color:#205f48;font-weight:600;box-shadow:0 1px 3px #214c3610}
+.management-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:18px 22px 24px;scrollbar-gutter:stable}
+#managementDialog [hidden]{display:none!important}
+#managementDialog .management-section{border-top:1px solid #e0e8e3;margin:0;padding:18px 0 8px}
+#managementDialog [role=tabpanel]>.management-section:first-child{border-top:0;padding-top:0}
+#managementDialog h3{font-size:18px;margin:0 0 12px;color:#234d40}
+#managementDialog p{line-height:1.65;margin:8px 0 13px}
+#managementDialog summary{cursor:pointer;color:#315c4c;font-weight:500}
+.manage-actions,.manage-fields{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+.manage-fields label{flex:1;min-width:180px;margin:0}
+.management-table{overflow:auto;max-height:320px;border:1px solid #d7e4de;border-radius:8px;margin:12px 0}
+#manageInspection pre{white-space:pre-wrap;max-height:240px;overflow:auto;font-size:13px;overflow-wrap:anywhere}
+#manageInspection table,#manageCompare table{font-size:16px}
+#manageInspection td,#manageCompare td{padding:8px 12px}
+.management-warnings{background:#fff6df;border-left:3px solid #c29334;padding:10px 12px;line-height:1.7}
+.manage-issue{padding:10px 0;border-bottom:1px solid #e5ebe7;overflow-wrap:anywhere}
+.manage-issue button{margin-left:10px}
+#manageHistory{font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+#manageHistory p{border-bottom:1px solid #e0e8e4;padding:10px 0}
+.manage-difference{background:#fff3da}
+#manageReplace{max-width:100%}
+.management-footer{padding:12px 22px;border-top:1px solid #bcd5c8;background:#f4f9f6;box-shadow:0 -3px 12px #23452d08}
+.management-footer label{margin:0;grid-template-columns:1fr auto;align-items:center;font-size:14px;font-weight:600;color:#294f3e}
+.management-footer label span{font-size:12px;font-weight:400;color:#698274}
+#manageReason{grid-column:1/-1;resize:vertical;min-height:54px;max-height:110px;font-size:14px;line-height:1.5;background:white}
+#manageReason[aria-invalid=true]{border-color:#ba5b3f;box-shadow:0 0 0 1px #ba5b3f}
+.management-feedback{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-top:6px}
+#manageReasonHint{font-size:12px;color:#6c8074}
+#managementDialog #manageMessage{flex:1;min-width:240px;min-height:20px;margin:0;font-size:13px;color:#245b42;overflow-wrap:anywhere}
+dialog #toast{position:absolute;top:12px;bottom:auto;left:50%;z-index:50;max-width:calc(100% - 32px);width:max-content;white-space:normal;pointer-events:none;font-size:15px;line-height:1.5}
+@media(max-width:650px){
+ #managementDialog{width:97vw;max-width:97vw;height:95dvh;max-height:95dvh}
+ .management-top,.management-body,.management-footer{padding-left:14px;padding-right:14px}
+ .management-context{gap:8px}.management-context label{min-width:100%;font-size:12px}
+ #manageRecord{font-size:12px;min-width:100%}
+ .management-nav{padding:7px 10px;gap:2px}.management-nav button{flex:0 0 auto;font-size:14px;padding:8px 10px}
+ .management-footer label{font-size:13px}#manageReasonHint{display:none}
+ .management-body{padding-top:14px}#manageReason{max-height:80px}
+}

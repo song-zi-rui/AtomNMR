@@ -1,0 +1,21 @@
+.filters { gap:10px; padding:14px 16px; max-height:65%; overflow-y:auto; flex-shrink:0; }
+.filters .hint { margin:0; font-size:12px; }
+.queue-filters summary { color:#365b5a; cursor:pointer; font-size:14px; }
+.queue-filters label { margin-top:10px; }
+#list { min-height:100px; }
+.paging { flex-shrink:0; }
+.done-tag { display:inline-block; margin-left:8px; padding:2px 6px; border-radius:4px; background:#d8eee2; color:#205c42; font-size:12px; }
+.shortcut-help { color:#526e6d; font-size:13px; line-height:1.7; margin:0 0 16px; }
+.recordhead { flex-wrap:wrap; }
+.record-navigation { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
+.record-navigation button { font-size:14px; }
+.spectrum-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:10px 0 14px; }
+.spectrum-tools button { font-size:14px; }
+.spectrum-tools #curationSummary { color:#6b5141; font-size:13px; }
+.spectrum-tools [hidden] { display:none; }
+.assignment-progress { border:1px solid #b7d6c7; border-radius:10px; background:#edf7f0; padding:14px 17px; margin:0 0 20px; line-height:1.7; }
+.assignment-progress strong { color:#155d44; font-size:26px; }
+.assignment-progress span { color:#526e64; font-size:14px; }
+.assignment-progress progress { display:block; width:100%; height:10px; margin:8px 0; accent-color:#28765a; }
+.assignment-progress small { display:block; color:#526e64; font-size:12px; }
+@media(max-width:700px) { aside { height:620px; } .filters { max-height:65%; } }

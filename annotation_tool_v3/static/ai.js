@@ -1,0 +1,61 @@
+'use strict';
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const labels={running:'分析中',stopping:'等待当前请求返回',finished:'本批已完成',stopped:'已停止',interrupted:'服务中断，可继续',error:'失败',pending:'等待分析',done:'完成',assigned:'唯一归属',equivalent_group:'同峰多原子',overlap:'重叠',ambiguous:'歧义',unassigned:'未确定',solvent:'溶剂',impurity:'杂质',excluded:'不计入'};
+const sources={shiftdb2:'ShiftDB2 原库归属',manual:'我的手工归属'};
+const state={run:null,item:null,poll:null,detailSerial:0};
+let requestedItem=null;
+async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const v=await r.json();if(!r.ok)throw Error(v.error||'请求失败');return v;}
+function notice(message){$('#notice').hidden=!message;$('#notice').textContent=message;}
+function guarded(id,action){$(id).onclick=async()=>{const b=$(id);b.disabled=true;notice('');try{await action();}catch(e){notice(e.message);}finally{b.disabled=false;}};}
+function pct(v){return v==null?'—':(v*100).toFixed(1)+'%';}
+function options(){return {scope:$('#scope').value,count:Number($('#count').value),seed:Number($('#seed').value),molecule_ids:$('#moleculeIds').value.split(/[\s,，;；]+/).filter(Boolean)};}
+async function settings(){
+ const s=await api('/api/ai/settings');$('#model').value=s.model;$('#thinking').checked=s.thinking;$('#maxTokens').value=s.max_tokens;$('#timeout').value=s.timeout;
+ $('#effort').value=s.reasoning_effort||'high';$('#wireFormat').value=s.wire_format||'compact-v2';
+ $('#keyState').textContent=s.key_configured?(s.key_saved?'已保存 · 自动沿用':'使用环境变量密钥'):s.key_error?'密钥需要重新保存':'首次填写密钥';
+ $('#apiKey').placeholder=s.key_configured?'已配置；留空继续沿用，填写新值才更换':'首次填写后会在本机加密保存';
+ $('#clearKey').disabled=!s.key_saved;
+ $('#keyHelp').textContent=s.key_error||'密钥由本机 Windows 用户加密保存，刷新、重启服务后自动沿用。输入框不回显；留空不会清除。';
+ return s;
+}
+async function saveSettings(){const body={model:$('#model').value.trim(),thinking:$('#thinking').checked,max_tokens:Number($('#maxTokens').value),timeout:Number($('#timeout').value),reasoning_effort:$('#effort').value,wire_format:$('#wireFormat').value};if($('#apiKey').value.trim())body.api_key=$('#apiKey').value.trim();await api('/api/ai/settings',body);$('#apiKey').value='';const s=await settings();$('#connectionResult').textContent=s.key_configured?'设置已保存。已配置的密钥会自动沿用；之后不必重复输入。':'参数已保存；首次使用请填写 API Key，保存一次后会自动沿用。';}
+guarded('#saveSettings',saveSettings);
+guarded('#clearKey',async()=>{await api('/api/ai/settings',{clear_key:true});$('#apiKey').value='';const s=await settings();$('#connectionResult').textContent=s.key_configured?'本机保存的密钥已清除；当前仍使用环境变量配置。':'本机保存的密钥已清除。下次需要重新输入。';});
+guarded('#testConnection',async()=>{await saveSettings();$('#connectionResult').textContent='正在连接…';const r=await api('/api/ai/test',{});$('#connectionResult').textContent='连接成功。可用模型：'+r.models.join('、');$('#models').innerHTML=r.models.map(m=>`<option value="${esc(m)}">`).join('');});
+$('#scope').onchange=()=>{$('#idsLabel').hidden=$('#scope').value!=='ids';};
+guarded('#preview',async()=>{const r=await api('/api/ai/preview',options());$('#previewResult').innerHTML=`已选 ${r.selected} / 请求 ${r.requested} 个分子。`+r.molecules.map(m=>`<p>${esc(m.formula)} · ${m.peaks} 峰 · 原库 ${m.references.shiftdb2} / 人工 ${m.references.manual}<br><code>${esc(m.molecule_id)}</code></p>`).join('')+(r.skipped.length?`<details><summary>查看跳过的记录（至多 30 条）</summary>${r.skipped.map(x=>`<p>${esc(x.molecule_id)}：${esc(x.reason)}</p>`).join('')}</details>`:'');$('#inputPreview').hidden=!r.example_input;$('#inputJson').textContent=JSON.stringify(r.example_input,null,2);});
+guarded('#start',async()=>{await saveSettings();const r=await api('/api/ai/runs',options());state.run=r.run_id;state.item=null;$('#detail').hidden=true;await refreshRun();await loadHistory();});
+async function loadHistory(){const r=await api('/api/ai/runs');$('#history').innerHTML=r.runs.map(x=>`<button data-run="${x.id}" class="${x.id===state.run?'selected':''}">${esc(labels[x.state]||x.state)} · ${x.done}/${x.total} 个成功${x.failed?' · '+x.failed+' 个失败':''}<small>${esc(new Date(x.created_at).toLocaleString())}</small></button>`).join('')||'<p class="hint">暂无批次</p>';if(!state.run&&r.active_run_id&&r.active_run_id!=='preparing'){state.run=r.active_run_id;await refreshRun();}}
+$('#history').onclick=async e=>{const b=e.target.closest('[data-run]');if(!b)return;state.run=b.dataset.run;state.item=null;$('#detail').hidden=true;try{await refreshRun();}catch(e){notice(e.message);}};
+async function refreshRun(){clearTimeout(state.poll);if(!state.run)return;const id=state.run;const r=await api('/api/ai/runs/'+id);if(id!==state.run)return;$('#empty').hidden=true;$('#runPanel').hidden=false;$('#runTitle').textContent='批次 '+id.slice(0,8);$('#runState').textContent=labels[r.state]||r.state;$('#runMeta').textContent=`${r.config.model} · ${r.config.thinking?'思考开启':'思考关闭'} · ${new Date(r.created_at).toLocaleString()} · 种子 ${r.config.options.seed} · 输入 ${r.usage.prompt_tokens} / 输出 ${r.usage.completion_tokens} token`;
+const bookmark=new URL(location.href);bookmark.searchParams.set('run_id',id);window.history.replaceState(null,'',bookmark);
+const total=r.items.length,done=r.counts.done+r.counts.error;$('#progress').max=total||1;$('#progress').value=done;$('#progressText').textContent=`已处理 ${done} / ${total}，成功 ${r.counts.done}，失败 ${r.counts.error}，等待 ${r.counts.pending}`;$('#runError').textContent=r.error||'';
+const running=['running','stopping'].includes(r.state);$('#stop').hidden=!running;$('#stop').disabled=r.state==='stopping';$('#resume').hidden=running||!r.counts.pending;$('#retry').hidden=running||!r.counts.error;$('#download').href='/api/ai/runs/'+id+'/download';
+$('#retryCurrent').hidden=running||!r.counts.error;
+if(r.usage_unavailable_items)$('#runMeta').textContent+=`；另有 ${r.usage_unavailable_items} 个失败项未记录用量，显示值不代表全部计费消耗`;
+if(r.config.retry_of)$('#runMeta').textContent+='；仅重跑原批次 '+r.config.retry_of.slice(0,8)+' 的失败项';
+$('#runMeta').textContent+='；强度 '+(r.config.reasoning_effort||'high')+'；协议 '+(r.config.wire_format||'verbose-v1')+'；盲标';
+$('#metricCards').innerHTML=r.metrics.filter(m=>m.nucleus==='all').map(m=>`<div class="metriccard"><span>${sources[m.source]}</span><strong>${pct(m.accuracy)}</strong><small>${m.correct} / ${m.reference_peaks} 个参考峰严格一致 · ${m.reference_molecules} 个有参考的分子</small></div>`).join('');
+$('#metrics').innerHTML=r.metrics.map(m=>`<tr><td>${sources[m.source]}</td><td>${m.nucleus==='all'?'H + C':m.nucleus}</td><td>${m.reference_peaks}</td><td>${m.correct} / ${m.reference_peaks}</td><td><strong>${pct(m.accuracy)}</strong></td><td>${pct(m.coverage)}</td><td>${pct(m.accuracy_when_assigned)}</td><td>${pct(m.top3_rate)}</td><td>${m.groups_correct} / ${m.groups}</td></tr>`).join('');
+$('#items').innerHTML=r.items.map(x=>`<tr data-item="${x.id}" class="${state.item===x.id?'selected':''}"><td>${x.ordinal+1}</td><td>${esc(x.formula)}</td><td><code>${esc(x.molecule_id)}</code></td><td class="${x.state==='error'?'bad':''}">${esc(labels[x.state]||x.state)}${x.error?'<br>'+esc(x.error):''}</td><td>${x.elapsed==null?'—':x.elapsed+' s'}</td></tr>`).join('');
+if(requestedItem&&r.items.some(x=>x.id===requestedItem)){const item=requestedItem;requestedItem=null;await showItem(item);}
+if(running)state.poll=setTimeout(()=>refreshRun().catch(e=>{notice(e.message);state.poll=setTimeout(()=>refreshRun().catch(()=>{}),5000);}),2500);
+}
+guarded('#stop',async()=>{await api('/api/ai/runs/'+state.run+'/stop',{});await refreshRun();});
+guarded('#resume',async()=>{await api('/api/ai/runs/'+state.run+'/resume',{});await refreshRun();});
+guarded('#retry',async()=>{await api('/api/ai/runs/'+state.run+'/resume',{retry_errors:true});state.item=null;$('#detail').hidden=true;await refreshRun();});
+guarded('#retryCurrent',async()=>{await saveSettings();const r=await api('/api/ai/runs/'+state.run+'/retry-current',{});state.run=r.run_id;state.item=null;$('#detail').hidden=true;await refreshRun();await loadHistory();});
+function atomNames(indices,ctx){return (indices||[]).map(i=>(ctx.atoms[i]?.element||'?')+i).join(', ')||'—';}
+async function showItem(id){const serial=++state.detailSerial,run=state.run;const r=await api('/api/ai/runs/'+run+'/items/'+id);if(serial!==state.detailSerial||run!==state.run)return;state.item=id;$('#detail').hidden=false;$('#detailTitle').textContent=r.formula+' · 分析结果';$('#openManual').href='/?molecule_id='+encodeURIComponent(r.molecule_id);$('#structure').src='/api/molecule/'+r.molecule_id+'/svg';$('#detailSmiles').textContent=r.input.smiles;$('#summary').textContent=r.output?.summary||r.error||'尚无结果';$('#warnings').textContent=(r.output?.warnings||[]).join('\n');$('#snapshot').textContent=`参考标签取自开始时的版本 ${r.revision}。`+(r.reference_changed_since_run?'当前记录已经更新，统计仍使用当时快照。':'当前版本与快照一致。');
+const predictions=new Map((r.output?.assignments||[]).map(p=>[p.spectrum_id+'|'+p.peak_id,p]));
+const usage=r.usage||{},reasoning=usage.completion_tokens_details?.reasoning_tokens;
+$('#apiUsage').textContent=(r.output?'DeepSeek 返回模型：'+(r.output.response_model||'未记录')+'。 ':'')+(usage.completion_tokens!=null?`输出 ${usage.completion_tokens} token${reasoning!=null?'，其中思考 '+reasoning+'、其余结果 '+(usage.completion_tokens-reasoning):''}。`:'此条未记录 API 用量；失败不代表没有产生计费。')+(r.diagnostics?.finish_reason?' API 终止原因：'+r.diagnostics.finish_reason:'');
+$('#spectraResults').innerHTML=r.input.spectra.map(s=>{const c=s.conditions;return `<h3>${s.nucleus==='13C'?'¹³C 碳谱':'¹H 氢谱'} · ${esc(s.spectrum_id)}</h3><p class="condition">溶剂 ${esc(c.solvent||'未知')} · 场强 ${c.frequency_mhz??'未知'} MHz · 温度 ${c.temperature_k??'未知'} K · pH ${c.ph??'未知'}</p><div class="tablewrap"><table class="peak-table"><thead><tr><th>峰 / 位移</th><th>实验信息</th><th>AI 建议</th><th>已有归属对照</th><th>简要依据</th></tr></thead><tbody>`+s.peaks.map(p=>{const pred=predictions.get(s.spectrum_id+'|'+p.peak_id);const refs=r.comparisons.filter(x=>x.kind==='peak'&&x.spectrum_id===s.spectrum_id&&x.peak_id===p.peak_id);const groups=r.comparisons.filter(x=>x.kind==='group'&&x.spectrum_id===s.spectrum_id&&x.peak_ids.includes(p.peak_id));const measurement=[p.multiplicity,p.reported_nH!=null?p.reported_nH+'H':'',p.j_values?.length?'J '+p.j_values.join(', ')+' '+(p.j_unit||'单位未确认'):'',p.source_signal_code?'源信号码 '+p.source_signal_code:''].filter(Boolean).join(' · ');return `<tr><td>${esc(p.peak_id)}<br><span class="shift">${p.shift_ppm}</span></td><td>${esc(measurement||'未报告')}</td><td>${esc(labels[pred?.status]||'未返回')}<br><strong>${esc(atomNames(pred?.atom_indices,r.input))}</strong>${pred?.candidates?.length?'<br><small>候选：'+esc(pred.candidates.map(x=>atomNames(x,r.input)).join(' / '))+'</small>':''}</td><td class="ref">${refs.map(x=>`<span class="${x.outcome==='match'?'good':x.outcome==='not_scored'?'neutral':'bad'}">${sources[x.source]}：${esc(atomNames(x.atom_indices,r.input))}<br>${x.eligible?(x.correct?'✓ 完全集合一致':x.outcome==='abstained'?'未确定，计入分母':'× 不一致'):'参考状态 '+esc(labels[x.status]||x.status)+'，不计逐峰分母'}</span>`).join('<br>')||'无逐峰参考'}${groups.map(g=>`<br><span class="neutral">无序组 ${esc(g.peak_ids.join('/'))} → ${esc(atomNames(g.atom_indices,r.input))}：${g.group_correct?'整组一致':'整组未一致'}</span>`).join('')}</td><td class="reason">${esc(pred?.brief_reason||'—')}<br><small>${pred?'模型自评 '+esc(pred.confidence)+'（非校准概率）':''}</small></td></tr>`;}).join('')+'</tbody></table></div>';}).join('');
+$('#detailJson').textContent=JSON.stringify(r,null,2);$('#detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
+$('#items').onclick=e=>{const tr=e.target.closest('[data-item]');if(tr)showItem(Number(tr.dataset.item)).catch(e=>notice(e.message));};
+guarded('#historyRefresh',loadHistory);guarded('#refresh',async()=>{await loadHistory();await refreshRun();});
+const mid=new URLSearchParams(location.search).get('molecule_id');if(mid){$('#scope').value='ids';$('#idsLabel').hidden=false;$('#moleculeIds').value=mid;$('#count').value=1;}
+const bookmarkRun=new URLSearchParams(location.search).get('run_id');if(bookmarkRun&&/^[a-f0-9]{32}$/.test(bookmarkRun)){state.run=bookmarkRun;requestedItem=Number(new URLSearchParams(location.search).get('item_id'))||null;}
+Promise.all([settings(),loadHistory()]).then(()=>{if(bookmarkRun)return refreshRun();}).catch(e=>notice(e.message));

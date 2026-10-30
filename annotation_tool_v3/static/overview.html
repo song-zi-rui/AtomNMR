@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>实验 NMR 数据库 · 三张图看懂</title><style>
+body{margin:0;background:#edf4ef;color:#19382f;font-family:"Microsoft YaHei",sans-serif}main{max-width:1440px;margin:auto;padding:32px}nav{display:flex;gap:24px;align-items:center}a{color:#157d60}h1{font-size:32px;margin:30px 0 8px}p{line-height:1.8;color:#52675d}figure{margin:32px 0;background:white;border-radius:18px;overflow:hidden;box-shadow:0 8px 30px #19382f0d}img{width:100%;display:block}figcaption{padding:16px 24px;font-size:17px}code{background:#eef4ee;padding:2px 5px}footer{padding-bottom:32px}
+</style></head><body><main><nav><a href="/">← 返回标注系统</a><a href="/figures/example_ethanol.json" download="example_ethanol.json">下载真实分子的完整 JSON</a></nav><h1>从实验来源，到日常标注</h1><p>这套系统以 SQLite 为日常数据库。原始数据不改写，导出时再生成 JSONL、Parquet 或 LMDB。点击图片可打开完整 SVG，任意放大。</p>
+<figure><a href="/figures/01_build_flow.svg" target="_blank"><img src="/figures/01_build_flow.svg" alt="实验来源筛选、去重、回源、工作队列与导出流程图"></a><figcaption>图 1：建设流程。缺少谱与缺少归属是两类问题；只导入真实实验峰。</figcaption></figure>
+<figure><a href="/figures/02_database_structure.svg" target="_blank"><img src="/figures/02_database_structure.svg" alt="分子、实验谱、峰归属、配对四类数据关系"></a><figcaption>图 2：数据结构。一个分子可以保留多条实验谱，标签属于具体的谱和峰。</figcaption></figure>
+<figure><a href="/figures/03_real_molecule_example.svg" target="_blank"><img src="/figures/03_real_molecule_example.svg" alt="真实乙醇分子的D2O碳谱和氢谱归属数据"></a><figcaption>图 3：真实示例。原子编号与数据库完全一致，H 标签指向所连接的重原子。</figcaption></figure>
+<footer>没有复核、计算、预测或原始 FID 模块。文献和原始行号只是找回数据的必要信息，不增加日常审批步骤。</footer></main></body></html>

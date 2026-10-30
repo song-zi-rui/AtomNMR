@@ -1,0 +1,20 @@
+{
+  "api": {
+    "base_url": "https://10.8.130.88/v1",
+    "model": "deepseek-v4.1-flash",
+    "api_adapter": "deepseek-local",
+    "thinking": false,
+    "reasoning_effort": "low",
+    "max_tokens": 8192,
+    "timeout": 600,
+    "wire_format": "compact-v3",
+    "assignment_mode": "assisted",
+    "json_mode": true,
+    "stream": true,
+    "tls_policy": "legacy_ca",
+    "ca_file": "/srv/atomnmr/app/annotation_tool_v3/certificates/ai-cluster-ca.crt",
+    "ca_sha256": "b09dc7b6f3c4207a659466b6dce7d23775d7b4d24144f457346456dab7e2eaa7",
+    "tls_origin": "https://10.8.130.88:443"
+  },
+  "execution": {"parallelism": 2, "parallel_strategy": "fixed"}
+}

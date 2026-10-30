@@ -1,0 +1,12 @@
+.structure-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.structure-tools select{width:auto;flex:1;min-width:150px;font-size:14px}
+.structure-tools button{font-size:14px}
+.complex-notice{padding:10px 12px;background:#fff4dd;border-radius:7px;font-size:13px;line-height:1.7;margin:10px 0}
+.complex-notice p{margin:6px 0}.complex-notice summary{cursor:pointer}
+.atom-keyboard{display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:12px}
+.atom-keyboard label{flex:1;min-width:130px}.atom-keyboard input{font-variant-numeric:tabular-nums}
+.spectrum-use-state{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff4dd;padding:10px 12px;border-radius:7px;margin:12px 0;font-size:14px;line-height:1.6}
+.spectrum-use-state[hidden],.complex-notice[hidden]{display:none}
+#structureDialog{width:min(1300px,96vw);max-height:94vh;overflow:auto;padding:20px}
+#moleculeLarge{display:block;width:100%;max-height:76vh;min-height:350px;object-fit:contain}
+textarea[readonly]{background:#f3f5f4;color:#526761}

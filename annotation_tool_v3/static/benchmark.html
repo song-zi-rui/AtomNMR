@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI归属测试台 · AtomNMR</title><link rel="stylesheet" href="/ai.css"><link rel="stylesheet" href="/benchmark.css"></head><body>
+<header><a class="brand" href="/">AtomNMR</a><strong>/ AI归属测试台</strong><nav><a href="/api_settings.html">API配置</a><a href="/auto.html">正式自动标注</a><a href="/statistics.html">数据统计</a><a href="/ai.html?history=1">旧测试批次</a></nav></header>
+<main>
+<section class="intro"><div><p class="eyebrow">MODEL & STRATEGY BENCHMARK</p><h1>选择样本和模型，运行一轮对比</h1><p>默认只使用一个模型。需要研究模型组合时，再打开路由。测试结果独立保存，参考答案仅在本地评分。</p></div><span class="tag">测试区 · 不写正式标签</span></section>
+<div id="message" class="notice" hidden role="status"></div>
+<nav class="steps"><a href="#step1">1 选择样本</a><a href="#step2">2 选择模型</a><a href="#step3">3 设置并运行</a><a href="#step4">4 对比结果</a></nav>
+<section id="step1" class="card">
+ <div class="sectionhead"><h2>1．选择测试样本</h2><span class="tag">同一列表反复使用</span></div>
+ <div class="selectionrow"><label>固定样本集<select id="setSelect"></select></label><button id="showSet">查看分子列表</button></div>
+ <p id="setSummary" class="hint"></p>
+ <details id="sampleDetails"><summary>分子列表与参考覆盖</summary><div class="tablewrap"><table><thead><tr><th>序号</th><th>分子式 / 编号</th><th>重原子</th><th>分层</th><th>C / H参考峰</th><th>溶剂匹配</th></tr></thead><tbody id="sampleRows"></tbody></table></div></details>
+ <details><summary>需要其他样本？新建固定列表</summary><div class="formgrid"><label>列表名称<input id="setName" value="ShiftDB代表性双谱样本"></label><label>样本数<input id="setCount" type="number" min="1" max="300" value="100"></label><label>随机种子<input id="seed" type="number" value="42"></label></div><label class="check"><input id="sameSolvent" type="checkbox" checked>仅选已知同溶剂谱对</label><p class="hint">按分子大小、芳香性和卤素分层，连接层去重；冻结结构、双谱与原库参考，之后每轮复用。</p><button id="buildSet">筛选并冻结列表（不调用API）</button></details>
+</section>
+<section id="step2" class="card">
+ <div class="sectionhead"><h2>2．选择模型</h2><a class="button" href="/api_settings.html" target="_blank" rel="noopener">管理API与模型 ↗</a></div>
+ <div class="selectionrow"><label>测试模型<select id="primary"></select></label><button id="reloadModels">刷新模型列表</button></div>
+ <p id="profileHint" class="hint"></p><p class="hint">接口地址、密钥和模型ID在独立的API配置页维护；配置完成后回到这里刷新即可。浏览器会记住上次选用的模型配置，同名模型请同时核对参数适配。</p>
+</section>
+<section id="step3" class="card">
+ <h2>3．设置并运行这一轮</h2>
+ <div class="formgrid"><label>测试名称<input id="runName" placeholder="例如 Qwen122-思考-32768"></label><label>本轮分子数<input id="runCount" type="number" min="1" max="300" value="10"></label><label>并行数量<input id="parallelism" type="number" min="1" max="64" value="1"></label><label>输出token上限<input id="maxTokens" type="number" min="1024" max="65536" step="1024" value="32768"></label></div>
+ <div class="formgrid"><label class="check"><input id="thinking" type="checkbox" checked>启用思考</label><label id="effortField">思考强度<select id="effort"><option value="high">high</option><option value="low">low</option><option value="auto">自动</option></select></label><label class="check"><input id="stream" type="checkbox">流式接收（显示接收进度）</label></div>
+ <p id="thinkingHint" class="hint"></p>
+ <details><summary>更多运行参数</summary><div class="formgrid"><label>请求总时限（秒）<input id="timeout" type="number" min="30" max="600" value="600"></label><label>数据协议<select id="wire"><option value="compact-v3">对象归属 v3 · 严格结构约束</option><option value="compact-v2">紧凑v2</option><option value="verbose-v1">原始v1</option></select></label><label class="check"><input id="jsonMode" type="checkbox" checked>请求JSON模式</label></div><p id="formatHint" class="hint"></p><p class="hint">总时限包含排队、模型思考和答案输出，持续收到数据也不会重新计时。</p></details>
+ <div class="routingbox"><label class="check routecontrol"><input id="routingEnabled" type="checkbox">启用路由 / 第二模型</label><p id="routingSummary" class="hint">路由已关闭：全部样本只用上方选中的模型，每分子最多一次请求。</p>
+ <fieldset id="routeOptions" hidden disabled><legend>模型组合设置</legend><div class="formgrid"><label>组合方式<select id="strategy"><option value="difficulty">按结构难度二选一</option><option value="cascade">第一模型先答，歧义峰交给第二模型</option></select></label><label>第二模型<select id="secondary"></select></label><label id="thresholdField">重原子数阈值<input id="atomThreshold" type="number" min="5" max="100" value="25"></label></div><p id="strategyHint" class="hint"></p><div class="formgrid"><label>第二模型输出token上限<input id="secondTokens" type="number" min="1024" max="65536" step="1024" value="32768"></label><label class="check"><input id="secondThinking" type="checkbox" checked>第二模型启用思考</label><label id="secondEffortField">第二模型思考强度<select id="secondEffort"><option value="high">high</option><option value="low">low</option><option value="auto">自动</option></select></label></div><p class="hint">第二模型的输出上限和思考可独立设置；协议、JSON开关和超时沿用本轮设置。两种策略都联合读取C/H双谱。</p></fieldset>
+ </div>
+ <div id="launchSummary" class="launchsummary"></div>
+ <div class="actions"><button id="start" class="primary">开始单模型测试</button><button id="pause" hidden>立即暂停测试</button><button id="resume" hidden>按原配置继续</button><button id="refresh">刷新结果</button></div>
+ <p class="hint">使用固定列表的前N项，不重新抽样。只有点击开始才提交真实归属请求；测试设置不修改正式标注配置。</p>
+ <div id="currentRun" hidden><h3 id="runTitle"></h3><p id="runMeta" class="hint"></p><div id="requestStatus" class="notice" hidden role="status" aria-live="polite"></div><div id="runCards" class="metriccards"></div><p id="runError" class="error"></p><div class="tablewrap"><table><thead><tr><th>分子</th><th>状态</th><th>处理用时</th><th>说明</th></tr></thead><tbody id="caseRows"></tbody></table></div></div>
+</section>
+<section id="step4" class="card"><div class="sectionhead"><h2>4．对比不同轮次</h2><div class="actions"><button id="compare">比较勾选轮次</button><a id="download" class="button" hidden>下载对比与逐峰结果JSON</a></div></div><p class="hint">勾选2–6轮。用“复制设置”复用样本和参数后只改变一项，或点击“与当前轮对比”。失败计入评分分母，参考答案不发送给模型。</p><div class="tablewrap"><table><thead><tr><th>选择</th><th>测试 / 状态</th><th>时间</th><th>快捷操作</th></tr></thead><tbody id="historyRows"></tbody></table></div><div id="comparison" hidden><p id="comparisonNote" class="hint"></p><div class="tablewrap"><table><thead><tr><th>轮次</th><th>C严格符合率</th><th>H严格符合率</th><th>确定作答率</th><th>总token</th><th>均值 / P90用时</th><th>API次数</th></tr></thead><tbody id="compareRows"></tbody></table></div><details><summary>分来源、Top-3、共同样本与原始对比数据</summary><pre id="comparisonJSON"></pre></details></div></section>
+<section id="caseDetail" class="card" hidden><h2 id="caseTitle">逐峰对照</h2><img id="caseStructure" alt="带编号结构" width="500" height="300"><p id="caseSummary"></p><div class="tablewrap"><table><thead><tr><th>峰</th><th>模型建议</th><th>原库参考</th><th>对照</th><th>依据</th></tr></thead><tbody id="predictionRows"></tbody></table></div><details><summary>请求阶段、参数、用量与原始结果</summary><pre id="caseJSON"></pre></details></section>
+</main><script src="/benchmark.js"></script></body></html>

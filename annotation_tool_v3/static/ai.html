@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AtomNMR · 历史 AI 分析批次</title><link rel="stylesheet" href="/ai.css"></head>
+<body>
+<header><a class="brand" href="/">AtomNMR</a><span class="separator">/</span><strong>历史 AI 分析批次</strong><nav><a href="/auto.html">持续自动标注</a><a href="/">人工标注</a><a href="/statistics.html">数据统计</a><button id="refresh">刷新状态</button></nav></header>
+<main>
+<section class="intro"><div><p class="eyebrow">PAIRED SPECTRA · BLIND EVALUATION</p><h1>让 H 谱与 C 谱一起参与归属</h1><p>DeepSeek 阅读结构、原子环境、全部可用双谱与各自实验条件。已有归属仅在本地作对照；AI 建议单独保存。</p></div><span class="tag">独立实验 · 不覆盖人工标签</span></section>
+<div id="notice" class="notice" role="status" hidden></div>
+<div class="layout"><aside>
+<section class="card" hidden><div class="sectionhead"><h2>1. 接口设置</h2><span id="keyState" class="muted">未配置</span></div><p class="hint">DeepSeek 官方接口 · api.deepseek.com</p>
+<label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="首次填写；留空会继续使用已保存密钥"></label>
+<p id="keyHelp" class="hint">密钥由本机 Windows 用户加密保存，刷新、重启服务后自动沿用。留空不清除；需要更换时填写新密钥。</p>
+<label>模型名称<input id="model" list="models" value="deepseek-flash"><datalist id="models"><option value="deepseek-flash"><option value="deepseek-v4-pro"><option value="deepseek-chat"><option value="deepseek-reasoner"></datalist></label>
+<label class="check"><input id="thinking" type="checkbox" checked>启用思考模式</label>
+<label>思考强度<select id="effort"><option value="high">high · 充分推理</option><option value="low">low · 节省推理</option><option value="auto">自动按记录复杂度选择</option></select></label>
+<label>传输协议<select id="wireFormat"><option value="compact-v3">对象归属 v3 · 严格结构约束</option><option value="compact-v2">紧凑表格 v2</option><option value="verbose-v1">原始 JSON v1</option></select></label><p class="hint">测试批次始终盲标，适合对比协议和思考强度。</p>
+<div class="two"><label>最大输出 token<input id="maxTokens" type="number" min="1024" max="65536" step="1024" value="32768"></label><label>超时（秒）<input id="timeout" type="number" min="30" max="600" value="600"></label></div>
+<p class="hint">思考模式会同时消耗思考与结果 token。建议先设 32768；确认仍达到上限时可升至 65536。提高上限不代表每次都会用完。</p>
+<div class="actions"><button id="saveSettings">保存设置</button><button id="testConnection">测试连接</button><button id="clearKey" class="small">清除已保存密钥</button></div><p id="connectionResult" class="hint" aria-live="polite">测试连接只读取可用模型，不发起谱图分析。</p>
+</section>
+<section class="card" hidden><h2>2. 选择本批样本</h2>
+<label>样本范围<select id="scope"><option value="both">已有归属：ShiftDB2 + 人工</option><option value="manual">只选有人工归属的分子</option><option value="shiftdb2">只选有 ShiftDB2 归属的分子</option><option value="unlabeled">双谱均未归属（仅生成建议）</option><option value="ids">指定分子编号</option></select></label>
+<label id="idsLabel" hidden>分子编号<textarea id="moleculeIds" rows="3" placeholder="M01446807d306212094a7f6df，可按行或逗号分隔"></textarea></label>
+<div class="two"><label>本批分子数<input id="count" type="number" min="1" max="500" value="10"></label><label>抽样种子<input id="seed" type="number" min="0" max="2147483647" value="42"></label></div>
+<p class="hint">每次请求分析一个分子的全部当前可用谱，批内顺序调用，最多 500 个分子。混合范围交替抽取人工与原库样本，数量不足时使用其余候选。相同种子可复现抽样；开始时冻结输入和对照标签。</p>
+<div class="actions"><button id="preview">预览样本</button><button id="start" class="primary">开始分析</button></div>
+<p class="hint">开始后会向 DeepSeek 发送所选分子的结构和实验数据，并消耗 API 额度。</p>
+<div id="previewResult" class="hint"></div><details id="inputPreview" hidden><summary>查看实际发送的信息（首个分子）</summary><pre id="inputJson"></pre></details>
+</section>
+<section class="card"><div class="sectionhead"><h2>历史批次</h2><button id="historyRefresh" class="small">刷新</button></div><div id="history" class="history"><p class="hint">暂无批次</p></div></section>
+</aside>
+<div class="content">
+<section id="empty" class="card empty"><span class="emptyicon">C ↔ H</span><h2>从一小批已归属分子开始</h2><p>建议先选 5–10 个做对照，观察不同类型峰的表现，再扩大批次。</p><div class="explainer"><div><strong>共同分析</strong><p>原子连接、芳香性、连氢数、位移、积分、峰型、J 值和实验条件。</p></div><div><strong>分来源比较</strong><p>ShiftDB2 原库标签与手工标签分别报告，部分归属只评估有标签的峰。</p></div><div><strong>保留不确定性</strong><p>留空和歧义照常计入分母；组内无序的归属单独比较整组。</p></div></div></section>
+<section id="runPanel" hidden>
+<div class="card"><div class="sectionhead"><div><p class="eyebrow">BATCH EXPERIMENT</p><h2 id="runTitle">分析进度</h2></div><span id="runState" class="tag"></span></div><p id="runMeta" class="hint"></p><progress id="progress" max="1" value="0"></progress><div class="sectionhead"><p id="progressText"></p><div class="actions"><button id="stop">停止后续请求</button><button id="resume">继续未完成</button><button id="retry">按原配置重试失败</button><button id="retryCurrent">用当前设置重跑失败项</button><a id="download" class="button" download>导出实验 JSON</a></div></div><p id="runError" class="error"></p><p class="hint">“继续”沿用原配置；调整 token 后选“用当前设置重跑失败项”，会另建批次，只调用失败分子并保留原输入和对照标签。两种重试均可能再次计费。</p></div>
+<div class="metriccards" id="metricCards"></div>
+<section class="card"><h2>对照统计</h2><p class="hint">“严格符合率” = 原子集合完全一致的峰 / 全部可评估参考峰。留空、歧义、漏答和失败项均不算正确。结果衡量与现有标签的一致性，并非独立验证的化学真值。</p><div class="tablewrap"><table><thead><tr><th>对照来源</th><th>核种</th><th>参考峰</th><th>正确 / 总数</th><th>严格符合率</th><th>确定作答率</th><th>作答后符合率</th><th>Top-3 命中</th><th>无序组一致</th></tr></thead><tbody id="metrics"></tbody></table></div><p class="hint">Top-3 是最多三个候选原子集合的覆盖率；不等于确定归属。原库 source_group、未知和歧义标签不计入逐峰准确率。双谱交叉分析使用全部可用实验，不要求两谱条件相同，条件差异会明确传入。</p></section>
+<section class="card"><h2>逐分子结果</h2><p class="hint">点击一行，查看两种谱的 AI 建议、简要依据和来源对照。</p><div class="tablewrap"><table><thead><tr><th>序号</th><th>分子</th><th>编号</th><th>状态</th><th>耗时</th></tr></thead><tbody id="items"></tbody></table></div></section>
+</section>
+<section id="detail" class="card" hidden><div class="sectionhead"><h2 id="detailTitle"></h2><a id="openManual" target="_blank" rel="noopener">打开人工标注</a></div><div class="moleculeSummary"><img id="structure" alt="带原子编号的结构"><div><code id="detailSmiles"></code><h3>DeepSeek 解读与提示</h3><p id="summary"></p><p id="warnings" class="error"></p><p id="apiUsage" class="hint"></p><p id="snapshot" class="hint"></p></div></div><p class="hint">以下“AI 建议”、候选、自评置信度及“简要依据”来自 DeepSeek；实验信息和已有归属来自数据库；一致性判断由本机程序计算。“模型未返回此峰”是系统补位提示。</p><div id="spectraResults"></div><details><summary>本条实验完整记录（同时包含数据库输入、参考标签与 AI 输出）</summary><pre id="detailJson"></pre></details></section>
+</div></div></main><script src="/ai.js"></script></body></html>

@@ -1,0 +1,44 @@
+:root { --app-header-height:120px; }
+header.app-header { display:block; padding:10px 20px 9px; min-height:0; z-index:10; }
+.header-main { display:flex; align-items:center; gap:12px; min-height:40px; flex-wrap:wrap; }
+.header-main .dataset-name { font-size:24px; letter-spacing:.3px; margin-right:10px; }
+.header-main #saveState { margin-left:auto; }
+.header-metrics { display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px; border-top:1px solid #3c6267; margin-top:8px; padding-top:8px; }
+.app-header .stats { display:flex; flex-wrap:wrap; flex:1; gap:6px 16px; padding:0; font-size:12px; color:#c2d8d6; }
+.app-header .stats > span { white-space:nowrap; }
+.app-header .stats strong { display:inline; color:#fff; font-size:17px; margin-right:5px; }
+.app-header .assignment-progress { border:0; border-left:1px solid #527674; border-radius:0; background:none; padding:0 0 0 16px; margin:0; color:#e1f3ed; line-height:1.6; }
+.app-header .assignment-progress summary strong { display:inline; color:#a7ebc7; font-size:20px; }
+.app-header .assignment-progress summary span { color:#c2e5d6; font-size:13px; }
+.header-disclosure { position:relative; }
+.header-disclosure > summary { cursor:pointer; list-style:none; border-radius:6px; padding:5px 8px; font-size:13px; }
+.header-disclosure > summary::-webkit-details-marker { display:none; }
+.header-disclosure > summary::after { content:' ▾'; color:#a5cebf; }
+.header-disclosure[open] > summary::after { content:' ▴'; }
+.header-disclosure > summary:hover,.header-disclosure[open] > summary { background:#2c565a; }
+.header-disclosure > summary:focus-visible { outline:3px solid #67bca7; outline-offset:2px; }
+.keyboard-help > summary { border:1px solid #527674; }
+.header-popover { position:absolute; top:calc(100% + 10px); left:0; width:360px; max-width:calc(100vw - 32px); max-height:65vh; overflow:auto; background:#fff; color:#193c3c; border:1px solid #b7d0c7; border-radius:10px; padding:18px; box-shadow:0 12px 40px #092b3440; z-index:20; }
+.progress-help .header-popover { left:auto; right:0; }
+.header-popover h2 { margin:0 0 12px; font-size:17px; }
+.header-popover p { margin:8px 0 0; color:#476562; font-size:13px; line-height:1.75; }
+.header-popover dl { display:grid; grid-template-columns:122px 1fr; gap:12px 8px; margin:0; font-size:13px; line-height:1.6; }
+.header-popover dt,.header-popover dd { margin:0; }
+.header-popover kbd { border:1px solid #c8d6d0; background:#f0f5f2; border-radius:4px; padding:2px 4px; font:12px 'Segoe UI',sans-serif; }
+.shell { min-height:calc(100vh - var(--app-header-height)); }
+aside { top:var(--app-header-height); height:calc(100vh - var(--app-header-height)); }
+.structuresticky { top:calc(var(--app-header-height) + 18px); max-height:calc(100vh - var(--app-header-height) - 36px); }
+@media(max-width:1150px) { .structuresticky { position:static; max-height:none; } .app-header .header-main > a { display:inline; } }
+@media(max-width:700px) {
+  header.app-header { padding:8px 12px; }
+  .header-main { gap:8px; }
+  .header-main .dataset-name { font-size:21px; margin-right:0; }
+  .header-main #saveState { font-size:12px; }
+  .header-metrics { gap:6px; }
+  .app-header .stats { flex-basis:100%; gap:3px 12px; font-size:11px; }
+  .app-header .stats strong { font-size:14px; }
+  .app-header .assignment-progress { border:0; padding:0; }
+  .header-popover { position:fixed; top:calc(var(--app-header-height) + 6px); left:12px; right:auto; width:calc(100vw - 24px); max-height:calc(100dvh - var(--app-header-height) - 24px); }
+  .progress-help .header-popover { left:12px; right:auto; }
+  aside { position:static; height:620px; }
+}

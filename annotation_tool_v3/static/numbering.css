@@ -1,0 +1,16 @@
+.numbering-notice{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;padding:12px;background:#eef5f6;border-radius:8px}
+.numbering-notice[hidden]{display:none}
+.numbering-dialog{width:min(1100px,94vw);max-height:90vh;overflow:auto;box-sizing:border-box;font-size:17px;padding:24px;border:1px solid #bccfce;border-radius:12px}
+.numbering-dialog::backdrop{background:#17373588}
+.numbering-dialog label{display:block;margin:12px 0;line-height:1.6}
+.numbering-dialog select,.numbering-dialog textarea{width:100%;box-sizing:border-box;font:inherit;padding:10px}
+.numbering-table{overflow:auto;max-height:46vh;border:1px solid #cbdcda;border-radius:8px}
+.numbering-table table{border-collapse:collapse;width:100%;min-width:670px;font-size:18px}
+.numbering-table td,.numbering-table th{padding:12px;text-align:left;border-bottom:1px solid #d3dfde}
+.numbering-table thead{position:sticky;top:0;background:#e9f2f1}
+.numbering-table small{font-size:15px;color:#9b401b}
+.numbering-difference{background:#fff4dd}
+.numbering-caution{background:#fff4dd;border-radius:8px;padding:12px;line-height:1.7}
+.numbering-actions{display:flex;gap:12px;flex-wrap:wrap}
+.numbering-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
+.numbering-dialog button{font:inherit}

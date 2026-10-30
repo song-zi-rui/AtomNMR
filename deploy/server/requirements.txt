@@ -1,0 +1,6 @@
+# CPU-only annotation service, Python 3.11/3.12. No CUDA/PyTorch needed.
+rdkit>=2024.9.6,<2027
+numpy>=1.26,<3
+scipy>=1.11,<2
+pyarrow>=17,<24
+lmdb>=1.4,<3
