@@ -9,7 +9,7 @@ from contextlib import closing
 from datetime import datetime,timezone
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-from . import core as db, ai_annotation as ai, ai_database, ai_parallel
+from . import core as db, ai_annotation as ai, ai_database, ai_parallel, ai_duration
 
 
 def initialize(c):
@@ -53,20 +53,36 @@ def initialize(c):
 class Service:
     def __init__(self,manager):
         self.manager=manager;self.path=manager.path;self.main_path=manager.main_path
+        self.duration_lock=threading.Lock();self.duration_cache={}
         with closing(ai.store(self.path)) as c:initialize(c)
+
+    def capacity(self,config,now=None):
+        estimate=None
+        if config.get('parallel_strategy')=='deepseek_offpeak_only' and ai_parallel.official(config):
+            key=tuple(config.get(k) for k in ('model','thinking','reasoning_effort','wire_format','timeout'))
+            with self.duration_lock:
+                cached=self.duration_cache.get(key)
+                if not cached or time.monotonic()-cached[0]>30:
+                    with closing(ai.store(self.path)) as c:estimate=ai_duration.estimate(c,config)
+                    self.duration_cache[key]=(time.monotonic(),estimate)
+                else:estimate=cached[1]
+        return ai_parallel.capacity(config,now=now,duration_estimate=estimate)
 
     def config(self):
         return ai.snapshot_config(self.manager.settings()) | self.execution()
 
     def execution(self,payload=None):
         with self.manager.lock, closing(ai.store(self.path)) as c:
-            row=c.execute("SELECT value FROM settings WHERE key='auto_execution'").fetchone()
+            key='auto_execution_official' if ai_parallel.official(self.manager.settings()) else 'auto_execution'
+            row=c.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+            if row is None and key=='auto_execution_official':
+                row=c.execute("SELECT value FROM settings WHERE key='auto_execution'").fetchone()
             saved=ai_parallel.validate(json.loads(row[0]) if row else {})
             if payload is not None:
                 saved=ai_parallel.validate(saved | payload)
                 if saved['parallel_strategy'] in ('deepseek_offpeak','deepseek_offpeak_only') and not ai_parallel.official(self.manager.settings()):
                     raise ValueError('谷价加速仅适用于 DeepSeek 官方端点；当前端点请选择固定并行')
-                c.execute("INSERT OR REPLACE INTO settings VALUES('auto_execution',?)",(db.dumps(saved),))
+                c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',(key,db.dumps(saved)))
                 job=c.execute("SELECT id,config_json FROM auto_jobs WHERE id=? AND state='running'",(self.manager.active,)).fetchone()
                 if job:
                     config=json.loads(job['config_json'])
@@ -199,9 +215,11 @@ class Service:
         recovered=item['state']=='responded';key=''
         if recovered:config=json.loads(item['request_config_json'])
         else:
+            execution=self.capacity(config)
+            if not execution['dispatch_allowed']:return None # Leave pending; no API, no failure count.
             key=self.manager.key();credential=self.manager.credential
             if self.manager.cancel.is_set():return None
-            config=dict(config,execution_at_dispatch=ai_parallel.capacity(config),dispatched_at=db.now())
+            config=dict(config,execution_at_dispatch=execution,dispatched_at=db.now())
             with closing(ai.store(self.path)) as c:
                 c.execute("UPDATE auto_items SET state='calling',credential_id=?,request_config_json=?,updated_at=? WHERE id=?",
                           (credential['id'] if credential else None,db.dumps(config),db.now(),item['id']));c.commit()
@@ -251,23 +269,31 @@ class Service:
             while True:
                 with closing(ai.store(self.path)) as c:
                     config=json.loads(c.execute('SELECT config_json FROM auto_jobs WHERE id=?',(identifier,)).fetchone()[0])
-                limit=ai_parallel.capacity(config)['effective_parallelism']
-                while not halt and not self.manager.cancel.is_set() and len(inflight)<limit:
+                limit=self.capacity(config)['effective_parallelism']
+                while not halt and not self.manager.cancel.is_set():
                     with closing(ai.store(self.path)) as c:
                         job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
                         excluded=tuple(inflight.values())
                         exclusion=(' AND id NOT IN ('+','.join('?' for _ in excluded)+')') if excluded else ''
-                        item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state IN ('pending','responded','received')"+exclusion+' ORDER BY id LIMIT 1',(identifier,*excluded)).fetchone()
+                        item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state IN ('responded','received')"+exclusion+' ORDER BY id LIMIT 1',(identifier,*excluded)).fetchone()
                     if item and item['state']=='received':
                         self._publish(item,config);continue
-                    if not item and not exhausted:
-                        item=self._next(job)
-                        if not item:exhausted=True
+                    if item:
+                        if len(inflight)>=ai_parallel.MAX_WORKERS:break
+                    else:
+                        limit=self.capacity(config)['effective_parallelism']
+                        if len(inflight)>=limit:break
+                        with closing(ai.store(self.path)) as c:
+                            item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state='pending'"+exclusion+' ORDER BY id LIMIT 1',(identifier,*excluded)).fetchone()
+                        if not item and not exhausted:
+                            item=self._next(job)
+                            if not item:exhausted=True
                     if not item:break
                     if self.manager.cancel.is_set():break
+                    if item['state']=='pending' and not self.capacity(config)['dispatch_allowed']:break
                     inflight[pool.submit(self._execute,item,config)]=item['id']
                 if not inflight:
-                    if limit==0 and not halt and not self.manager.cancel.is_set():
+                    if limit==0 and not exhausted and not halt and not self.manager.cancel.is_set():
                         # Keep the job alive across peak hours, with no paid calls
                         # and no cursor advancement. Cancellation remains immediate.
                         self.manager.cancel.wait(2)
@@ -301,13 +327,14 @@ class Service:
 
     def status(self,identifier=None,result_state=None):
         if result_state not in (None,'','error'):raise ValueError('结果筛选无效')
+        identifier=identifier or self.manager.active
         with closing(ai.store(self.path)) as c:
             jobs=[dict(r) for r in c.execute('SELECT * FROM auto_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 30')]
             job=c.execute('SELECT * FROM auto_jobs WHERE id=? AND deleted_at IS NULL',(identifier,)).fetchone() if identifier else c.execute('SELECT * FROM auto_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 1').fetchone()
             if not job:return {'jobs':jobs,'job':None,'active_id':self.manager.active}
             value=dict(job);value['config']=json.loads(value.pop('config_json'))
             value['usage']=json.loads(value.pop('usage_totals_json'))
-            value['execution']=ai_parallel.capacity(value['config'])
+            value['execution']=self.capacity(value['config'])
             items=c.execute('SELECT * FROM auto_items WHERE job_id=?'+(" AND state='error'" if result_state=='error' else '')+' ORDER BY id DESC LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
             value['counts']={'done':job['success'],'error':job['failures']}
             for state in ('pending','calling','responded','received'):

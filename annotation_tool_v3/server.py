@@ -26,7 +26,6 @@ from .bmrb_reference import fetch_reference
 from .ai_annotation import Manager as AIAnnotationManager
 from .auto_annotation import Service as AutomaticAnnotationService
 from .ai_benchmark import Service as BenchmarkService
-from .backups import Service as BackupService
 
 STATIC = Path(__file__).parent / "static"
 
@@ -57,7 +56,6 @@ class App:
         self.ai = (manager_factory or AIAnnotationManager)(self.path)
         self.auto = AutomaticAnnotationService(self.ai)
         self.benchmark = BenchmarkService(self.ai)
-        self.backups = BackupService(self.path)
 
     def stats(self):
         # One count scan per interval, even when several pages request it.
@@ -165,7 +163,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 return self.send(value)
             if path.startswith("/api/"):
-                if path == '/api/backups':return self.send(self.server.app.backups.status())
                 if path == '/api/ai/credentials':
                     return self.send(self.server.app.ai.vault.status())
                 if path == '/api/health':return self.send({'status':'ok','service':'atomnmr','pid':os.getpid(),'started_at':self.server.app.started_at})
@@ -278,13 +275,6 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= 8*1024*1024:
                 raise ValueError("请求体大小无效")
             payload = json.loads(self.rfile.read(size))
-            if self.path.startswith('/api/backups'):
-                service=self.server.app.backups
-                if self.path == '/api/backups/settings':return self.send(service.configure(payload))
-                if self.path == '/api/backups/test':return self.send(service.test())
-                if self.path == '/api/backups/run':return self.send(service.start(payload))
-                if self.path == '/api/backups/code':return self.send(service.start_code())
-                return self.send({'error':'备份接口不存在'},status=404)
             if self.path.startswith('/api/benchmark/'):
                 if not isinstance(payload,dict):raise ValueError('请求应为JSON对象')
                 bench=self.server.app.benchmark
@@ -397,7 +387,6 @@ def main():
         server.serve_forever()
     finally:
         server.server_close()
-        server.app.backups.shutdown()
         server.app.pool.shutdown(wait=True)
         server.app.ai.shutdown()
 

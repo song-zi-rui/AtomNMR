@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AtomNMR code sync
+
+[Timer]
+OnCalendar=*-*-* 22:00:00 Asia/Shanghai
+Persistent=true
+Unit=atomnmr-code-sync.service
+
+[Install]
+WantedBy=timers.target

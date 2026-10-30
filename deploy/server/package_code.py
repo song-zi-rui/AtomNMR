@@ -12,15 +12,15 @@ def collect_files(root):
             if not path.is_file() or '__pycache__' in path.parts or path.suffix in ('.pyc','.pyo'):continue
             if '.env' in path.name and path.name!='atomnmr.env.example':continue
             if path.suffix.lower() in ('.sqlite','.db','.lmdb','.zip','.log','.key','.pem'):continue
-            if folder=='deploy/server' and path.name not in ['package_code.py','api.example.json','atomnmr.env.example','atomnmr.service','atomnmr-user.service','openlist-user.service','start-user.sh','requirements.txt']:continue
+            if folder=='deploy/server' and path.name not in ['package_code.py','api.example.json','atomnmr.env.example','atomnmr.service','atomnmr-user.service','start-user.sh','requirements.txt','GITHUB_README.md','sync-code.ps1','atomnmr-code-sync.service','atomnmr-code-sync.timer']:continue
             files.append(path)
     files.append(root/'nmrpeak/utils/vocab_rules.py')
     doc=root/'docs/组内服务器部署与持续标注_20261030.md'
     if doc.exists():files.append(doc)
     user_doc=root/'docs/Ubuntu无sudo服务器部署_20261030.md'
     if user_doc.exists():files.append(user_doc)
-    backup_doc=root/'docs/夸克备份与仅谷价标注_20261030.md'
-    if backup_doc.exists():files.append(backup_doc)
+    operations_doc=root/'docs/官方谷价收尾与数据整理_20261030.md'
+    if operations_doc.exists():files.append(operations_doc)
     return files
 
 def main():

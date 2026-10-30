@@ -74,7 +74,6 @@ def main():
     finally:
         httpd.server_close()
         if hasattr(httpd,'app'):
-            httpd.app.backups.shutdown()
             httpd.app.ai.shutdown();httpd.app.pool.shutdown(wait=True)
         lock_file.close()
 

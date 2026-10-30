@@ -1,0 +1,8 @@
+[Unit]
+Description=AtomNMR code-only GitHub sync
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/atomnmr/app
+ExecStart=%h/atomnmr/venv/bin/python tools/sync_annotation_github.py --repo git@github.com:song-zi-rui/AtomNMR.git
+UMask=0077
