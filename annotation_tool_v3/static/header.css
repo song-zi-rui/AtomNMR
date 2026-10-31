@@ -1,8 +1,11 @@
-:root { --app-header-height:120px; }
+:root { --app-header-height:68px; }
 header.app-header { display:block; padding:10px 20px 9px; min-height:0; z-index:10; }
 .header-main { display:flex; align-items:center; gap:12px; min-height:40px; flex-wrap:wrap; }
 .header-main .dataset-name { font-size:24px; letter-spacing:.3px; margin-right:10px; }
 .header-main #saveState { margin-left:auto; }
+.header-main #saveState:empty { display:none; }
+.header-main #save { margin-left:auto; }
+.header-main #saveState:not(:empty) + #save { margin-left:0; }
 .header-metrics { display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px; border-top:1px solid #3c6267; margin-top:8px; padding-top:8px; }
 .app-header .stats { display:flex; flex-wrap:wrap; flex:1; gap:6px 16px; padding:0; font-size:12px; color:#c2d8d6; }
 .app-header .stats > span { white-space:nowrap; }

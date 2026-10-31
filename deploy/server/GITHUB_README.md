@@ -6,7 +6,7 @@
 
 ## 启动
 
-在 Python 3.11/3.12 环境安装 `deploy/server/requirements.txt`，将自己的三个数据库放入 `data/assignment_database_v1/`：
+在 Python 3.11/3.12 环境安装 `deploy/server/requirements.txt`，将自己的三个数据库放入 `data/assignment_database_v1/databases/`。日志、导出与历史备份位于外层目录：
 
 - `assignments.sqlite`：分子、谱峰、归属及来源。
 - `ai_annotations.sqlite`：正式 AI 任务、设置、响应记录。

@@ -30,7 +30,7 @@ def write_csv(path,rows):
 
 def main():
     OUT.mkdir(parents=True,exist_ok=True)
-    c=sqlite3.connect((ROOT/'data/assignment_database_v1/ai_annotations.sqlite').as_uri()+'?mode=ro',uri=True);c.row_factory=sqlite3.Row
+    c=sqlite3.connect((ROOT/'data/assignment_database_v1/databases/ai_annotations.sqlite').as_uri()+'?mode=ro',uri=True);c.row_factory=sqlite3.Row
     result={};records={};details=[]
     for side,ids in JOBS.items():
         values=[]

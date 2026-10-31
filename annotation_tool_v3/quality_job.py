@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import core as db, migrate, quality
+from .paths import artifacts_root
 
 
 def source_item(row):
@@ -162,7 +163,7 @@ def main():
     db.set_meta(c, "quality_export_enforced", True)
     c.commit()
     c.execute("PRAGMA cache_size=-131072")
-    folder = args.db.parent
+    folder = artifacts_root(args.db)
     state = {"pid": os.getpid(), "state": "running", "started_at": db.now(), "policy": quality.POLICY}
     state_file = folder / "migration_job.json"
     lock_file = folder / "quality_job.lock"

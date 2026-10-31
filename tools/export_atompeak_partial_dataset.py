@@ -7,11 +7,12 @@ import time
 from pathlib import Path
 
 from atompeak_data.export import export_training_dataset
+from annotation_tool_v3.paths import DEFAULT_DB
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',type=Path,default=Path('data/assignment_database_v1/assignments.sqlite'))
+    p.add_argument('--db',type=Path,default=DEFAULT_DB)
     p.add_argument('--output-dir',type=Path,required=True)
     p.add_argument('--seed',type=int,default=42)
     p.add_argument('--valid-ratio',type=float,default=.1);p.add_argument('--test-ratio',type=float,default=.1)

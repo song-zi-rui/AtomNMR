@@ -86,8 +86,6 @@ function renderAssignmentProgress(p){
   const expanded=$("#assignmentProgress").querySelector?.('details')?.open;
   $("#assignmentProgress").innerHTML=`<details class="header-disclosure progress-help" ${expanded?"open":""}><summary><strong>${p.ready_molecules.toLocaleString()}</strong> C/H 双谱全归属 <span>· ${p.percent.toFixed(2)}%</span></summary><div class="header-popover"><h2>双谱归属进度</h2><p><b>${p.ready_molecules.toLocaleString()}</b> / ${p.total_dual_molecules.toLocaleString()} 个双谱分子 · ${p.percent.toFixed(2)}%</p><progress aria-label="双谱全归属进度" max="${Math.max(1,p.total_dual_molecules)}" value="${p.ready_molecules}"></progress><p>还剩 ${p.remaining_molecules.toLocaleString()} 个双谱分子未达到全归属。</p><p>按分子去重；多条当前谱全部有归属才计入；含原库归属，不仅是人工新增。未处理、歧义及排除峰不算全归属；不代表谱完整、归属正确或 H/C 条件一致。</p></div></details>`;
 }
-let progressRefreshTimer;
-function refreshProgressSoon(){clearTimeout(progressRefreshTimer);progressRefreshTimer=setTimeout(()=>window.AnnotationWorkload?.refresh().catch(()=>{}),700);}
 let statsRequest;
 function loadStats(){if(!statsRequest)statsRequest=loadStatsOnce().finally(()=>{statsRequest=null;});return statsRequest;}
 async function loadStatsOnce(){
@@ -166,7 +164,6 @@ async function performSave(done){
       state.timer=setTimeout(()=>save().catch(e=>toast(e.message)),300);
     }
     renderHeader();
-    refreshProgressSoon();
     if(done){
       toast(state.dirty?"上一笔已保存；新增修改仍待保存，分子尚未结束。":"已结束此分子；歧义记录原样保留。");
     }

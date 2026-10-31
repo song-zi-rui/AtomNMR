@@ -22,6 +22,7 @@ from .export_policy import validate as validate_export_options
 from . import curation
 from . import numbering
 from . import workload
+from .paths import artifacts_root, main_database
 from .bmrb_reference import fetch_reference
 from .ai_annotation import Manager as AIAnnotationManager
 from .auto_annotation import Service as AutomaticAnnotationService
@@ -32,7 +33,7 @@ STATIC = Path(__file__).parent / "static"
 
 def migration_status(path):
     try:
-        job = json.loads((Path(path).parent / "migration_job.json").read_text(encoding="utf-8"))
+        job = json.loads((artifacts_root(path) / "migration_job.json").read_text(encoding="utf-8"))
         if job.get("state") in ("running", "generating_report"):
             heartbeat = job.get("updated_at")
             if not heartbeat or (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat)).total_seconds() > 120:
@@ -44,9 +45,9 @@ def migration_status(path):
 
 class App:
     def __init__(self, path, manager_factory=None):
-        self.path = Path(path)
+        self.path = main_database(path)
         self.started_at = db.now()
-        with closing(db.connect(path)) as c:
+        with closing(db.connect(self.path)) as c:
             db.initialize(c)
         self.jobs = {}
         self.pool = ThreadPoolExecutor(max_workers=1)
@@ -101,7 +102,7 @@ class App:
                 if preview:
                     result=preview_database(self.path,payload.get('filters'),payload.get('molecule_id'),export_options,update,require_quality=payload['format']=='atompeak')
                 else:
-                    result = export_database(self.path, self.path.parent / "exports", payload["format"], payload.get("filters"), payload.get("molecule_id"), training_options=training_options, progress=update,export_options=export_options)
+                    result = export_database(self.path, artifacts_root(self.path) / "exports", payload["format"], payload.get("filters"), payload.get("molecule_id"), training_options=training_options, progress=update,export_options=export_options)
                 self.jobs[job] = {"state": "done", **result}
             except Exception as exc:
                 self.jobs[job] = {"state": "error", "error": str(exc)}

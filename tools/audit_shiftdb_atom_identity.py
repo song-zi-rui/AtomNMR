@@ -19,6 +19,7 @@ from rdkit import Chem, RDLogger
 from tools.filter_nmrshiftdb2_experimental import iter_records, parse_record, classify, SPECTRUM, sha256
 from tools.shiftdb_atom_identity import canonical_identity, source_peaks, POLICY
 from tools.shiftdb_numbering import assess_numbering
+from annotation_tool_v3.paths import DEFAULT_DB
 
 DEFAULT_OUT=Path('data/shiftdb_atom_identity_audit/full_snapshot')
 
@@ -299,7 +300,7 @@ def rollback_repair(path, archive_path):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--sdf',type=Path,default=Path('data/nmrshiftdb2/nmrshiftdb2withsignals.sd'))
     p.add_argument('--output-dir',type=Path,default=DEFAULT_OUT);p.add_argument('--apply',action='store_true')
-    p.add_argument('--db',type=Path,default=Path('data/assignment_database_v1/assignments.sqlite'))
+    p.add_argument('--db',type=Path,default=DEFAULT_DB)
     p.add_argument('--rollback',type=Path,help='Explicitly restore a repair archive; refuses molecules edited since repair')
     p.add_argument('--source-key-prefix',help='Use indexed import source keys to avoid scanning unrelated spectra')
     args=p.parse_args()

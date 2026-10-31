@@ -8,7 +8,7 @@
 
 ```powershell
 ssh 用户名@服务器地址 "mkdir -p ~/atomnmr_upload"
-scp .\deploy\atomnmr-server-code-20261030.zip 用户名@服务器地址:~/atomnmr_upload/
+scp .\deploy\atomnmr-server-code-20261031.zip 用户名@服务器地址:~/atomnmr_upload/
 scp E:\atomnmr_transfer\assignments.sqlite E:\atomnmr_transfer\ai_annotations.sqlite E:\atomnmr_transfer\ai_benchmarks.sqlite 用户名@服务器地址:~/atomnmr_upload/
 ```
 
@@ -17,13 +17,13 @@ scp E:\atomnmr_transfer\assignments.sqlite E:\atomnmr_transfer\ai_annotations.sq
 ## 二、用户目录与Python环境
 
 ```bash
-mkdir -p ~/atomnmr/{app,data,secrets,logs}
-unzip ~/atomnmr_upload/atomnmr-server-code-20261030.zip -d ~/atomnmr/app
-cp -n ~/atomnmr_upload/assignments.sqlite ~/atomnmr/data/
-cp -n ~/atomnmr_upload/ai_annotations.sqlite ~/atomnmr/data/
-cp -n ~/atomnmr_upload/ai_benchmarks.sqlite ~/atomnmr/data/
+mkdir -p ~/atomnmr/{app,data/databases,secrets,logs}
+unzip ~/atomnmr_upload/atomnmr-server-code-20261031.zip -d ~/atomnmr/app
+cp -n ~/atomnmr_upload/assignments.sqlite ~/atomnmr/data/databases/
+cp -n ~/atomnmr_upload/ai_annotations.sqlite ~/atomnmr/data/databases/
+cp -n ~/atomnmr_upload/ai_benchmarks.sqlite ~/atomnmr/data/databases/
 chmod 700 ~/atomnmr/secrets
-chmod 600 ~/atomnmr/data/*.sqlite
+chmod 600 ~/atomnmr/data/databases/*.sqlite
 python3 --version
 python3 -m venv ~/atomnmr/venv
 ~/atomnmr/venv/bin/python -m pip install --upgrade pip
@@ -35,7 +35,7 @@ python3 -m venv ~/atomnmr/venv
 若没有unzip，用已有Python解压：
 
 ```bash
-python3 -m zipfile -e ~/atomnmr_upload/atomnmr-server-code-20261030.zip ~/atomnmr/app
+python3 -m zipfile -e ~/atomnmr_upload/atomnmr-server-code-20261031.zip ~/atomnmr/app
 ```
 
 若venv提示缺少ensurepip或python3-venv，无sudo时不要执行apt安装。先检查组里已有的conda、mamba或其他Python3.12路径。如果已有conda，可在指定路径建立环境：

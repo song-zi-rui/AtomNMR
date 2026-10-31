@@ -1,5 +1,6 @@
 """Build an allowlisted code-only ZIP. Never package databases, keys or environments."""
 import hashlib
+import argparse
 import json
 from pathlib import Path
 import zipfile
@@ -21,11 +22,17 @@ def collect_files(root):
     if user_doc.exists():files.append(user_doc)
     operations_doc=root/'docs/官方谷价收尾与数据整理_20261030.md'
     if operations_doc.exists():files.append(operations_doc)
+    layout_doc=root/'docs/标注系统界面与数据库目录_20261031.md'
+    if layout_doc.exists():files.append(layout_doc)
     return files
 
 def main():
     root=Path(__file__).resolve().parents[2]
-    target=root/'deploy/atomnmr-server-code-20261030.zip'
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output',type=Path,default=root/'deploy/atomnmr-server-code-20261031.zip')
+    target=parser.parse_args().output
+    if target.exists():raise ValueError('Choose a new archive path; previous code packages are preserved')
+    target.parent.mkdir(parents=True,exist_ok=True)
     files=collect_files(root)
     manifest={str(p.relative_to(root)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
     with zipfile.ZipFile(target,'w',compression=zipfile.ZIP_DEFLATED) as z:

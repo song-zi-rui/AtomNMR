@@ -12,7 +12,7 @@ python -m annotation_tool_v3.server --port 8767 --open
 
 打开 http://127.0.0.1:8767/ 。也可运行本目录 `start.ps1`。
 
-- `data/assignment_database_v1/assignments.sqlite`：日常主库。
+- `data/assignment_database_v1/databases/assignments.sqlite`：日常主库，同目录另有 `ai_annotations.sqlite` 和 `ai_benchmarks.sqlite`。
 - [AtomNMR 标注系统完整上手教程](../docs/AtomNMR_标注系统完整上手教程.md)：首次使用、原子与整组选取、状态判断、保存快捷键、数据管理、导出和常见问题。
 - `docs/实验NMR数据库建设与使用_v2_20260929.md`：建设规则、字段字典、操作说明与限制。
 - `/overview.html`：三张 SVG 与真实分子示例。

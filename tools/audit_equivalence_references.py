@@ -11,7 +11,7 @@ OUT=ROOT/'data/assignment_database_v1/audits/equivalence_20261029'
 RUN='533ae96877bc4d1da2631bf63eec25d1'
 
 def connection(name):
-    c=sqlite3.connect((ROOT/'data/assignment_database_v1'/name).as_uri()+'?mode=ro',uri=True)
+    c=sqlite3.connect((ROOT/'data/assignment_database_v1/databases'/name).as_uri()+'?mode=ro',uri=True)
     c.row_factory=sqlite3.Row
     return c
 

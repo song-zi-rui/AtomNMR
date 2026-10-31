@@ -13,9 +13,9 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Chem import rdDepictor
+from .paths import DEFAULT_DB, main_database
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / "data/assignment_database_v1/assignments.sqlite"
 SCHEMA = "experimental-assignment-sqlite-v1"
 ASSIGNED = {"assigned", "equivalent_group", "overlap", "source_group"}
 STATES = ASSIGNED | {"unassigned", "ambiguous", "solvent", "impurity", "excluded"}
@@ -47,7 +47,9 @@ def annotation_coverage(total, assigned):
 
 
 def connect(path=DEFAULT_DB, timeout=60):
-    path = Path(path)
+    path = main_database(path)
+    if path.resolve() == DEFAULT_DB.resolve() and not path.exists() and (path.parent.parent/'assignments.sqlite').is_file():
+        raise ValueError('旧位置仍有主库，新位置尚未迁移完成；拒绝创建空数据库，请先完成数据库整理。')
     path.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(path, timeout=timeout)
     c.row_factory = sqlite3.Row

@@ -235,7 +235,7 @@ def render_svg(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, default=ROOT / "data/assignment_database_v1/ai_annotations.sqlite")
+    parser.add_argument("--db", type=Path, default=ROOT / "data/assignment_database_v1/databases/ai_annotations.sqlite")
     parser.add_argument("--job-id")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "docs/ai_token_audit_20261028")
     args = parser.parse_args()

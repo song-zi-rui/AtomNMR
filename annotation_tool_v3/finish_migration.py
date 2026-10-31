@@ -8,12 +8,13 @@ from . import core as db
 from . import migrate
 from .maintenance import report
 from .generate_figures import main as figures
+from .paths import artifacts_root
 
 
 def main():
     # The checkpointed CLI owns all data writes; source files remain read-only.
     state={"pid":os.getpid(),"started_at":db.now(),"state":"running"}
-    state_file=db.DEFAULT_DB.parent/"migration_job.json"
+    state_file=artifacts_root(db.DEFAULT_DB)/"migration_job.json"
     state_lock=threading.Lock()
     stopped=threading.Event()
     def save_state():

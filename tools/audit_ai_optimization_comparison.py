@@ -47,7 +47,7 @@ def summarize(rows):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',type=Path,default=ROOT/'data/assignment_database_v1/ai_annotations.sqlite')
+    p.add_argument('--db',type=Path,default=ROOT/'data/assignment_database_v1/databases/ai_annotations.sqlite')
     p.add_argument('--output',type=Path,default=ROOT/'docs/ai_token_audit_20261028/optimization_comparison.json')
     args=p.parse_args();rows=load(args.db)
     old=[r for r in rows if r['config'].get('wire_format','verbose-v1')=='verbose-v1']

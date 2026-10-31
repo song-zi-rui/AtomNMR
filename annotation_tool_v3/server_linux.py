@@ -11,6 +11,7 @@ from contextlib import closing
 from .ai_annotation import Manager
 from .server import App,Handler,ThreadingHTTPServer
 from . import api_tls
+from .paths import artifacts_root
 
 class EnvironmentManager(Manager):
     def refresh_credential(self):
@@ -43,7 +44,7 @@ def main():
     cfg=json.loads(args.config.read_text(encoding='utf-8'))
     if not isinstance(cfg,dict) or set(cfg)-{'api','execution'}:p.error('配置应只包含api和execution')
     # Lock before App initialization, which recovers unfinished request states.
-    lock=args.db.parent/'annotation-server.lock';lock_file=lock.open('a+b')
+    lock=artifacts_root(args.db)/'annotation-server.lock';lock_file=lock.open('a+b')
     try:
         if os.name=='posix':
             import fcntl

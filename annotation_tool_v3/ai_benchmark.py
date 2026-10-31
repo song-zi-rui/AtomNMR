@@ -55,7 +55,8 @@ def fingerprint(value):return hashlib.sha256(db.dumps(value).encode()).hexdigest
 
 class Service:
     def __init__(self,manager):
-        self.manager=manager;self.path=Path(manager.main_path).parent/'ai_benchmarks.sqlite'
+        from .paths import companion_database
+        self.manager=manager;self.path=companion_database(manager.main_path,'ai_benchmarks.sqlite')
         initialize(self.path)
         with closing(connect(self.path)) as c:
             if not c.execute('SELECT 1 FROM profiles').fetchone():

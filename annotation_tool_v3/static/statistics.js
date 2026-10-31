@@ -8,17 +8,24 @@
   const card=(title,value,unit='')=>`<article class="card"><p>${text(title)}</p><strong>${n(value)}<span class="unit">${text(unit)}</span></strong></article>`;
   function renderDaily(data){
     const d=data.day;today=data.today;$('day').value=data.date;$('day').max=today;
-    $('dailyTitle').textContent=data.date===today?'今日工作量':data.date+' 工作量';
-    $('dailyCards').innerHTML=card('处理分子',d.processed_molecules,'个')+card('结束分子',d.finished_molecules,'个')+card('修改 C 峰',d.c_peaks,'个')+card('修改 H 峰',d.h_peaks,'个')+card('保存记录',d.save_operations,'次')+card('管理操作',d.management_operations,'次');
+    $('dailyTitle').textContent='标注统计';
+    document.querySelectorAll('[data-selected-date]').forEach(el=>{el.textContent=data.date===today?'今日':data.date;});
+    $('dailyCards').innerHTML=card('处理分子',d.processed_molecules,'个')+card('修改 C 峰',d.c_peaks,'个')+card('修改 H 峰',d.h_peaks,'个')+card('保存记录',d.save_operations,'次');
+    $('manualExtraCards').innerHTML=card('当日结束分子',d.finished_molecules,'个')+card('当日管理操作',d.management_operations,'次');
     $('autoDailyCards').innerHTML=card('AI 结果入库分子',d.ai_molecules,'个')+card('AI 新增 C 归属',d.ai_c_peaks,'峰')+card('AI 新增 H 归属',d.ai_h_peaks,'峰')+card('AI 入库结果',d.ai_operations,'条');
     $('historyNote').textContent=`完整逐次记录从 ${data.recording_started_at?stamp(data.recording_started_at):'本次升级'} 开始。更早日期按已有最后处理时间和管理记录恢复，可能遗漏早先保存及结束记录；逐峰工作量从启用后开始统计。${d.recovered_records?' 当天含 '+n(d.recovered_records)+' 条恢复记录。':''}`;
     const max=Math.max(1,...data.history.map(x=>x.processed_molecules));
     $('historyRows').innerHTML=data.history.map(r=>`<tr class="${r.date===data.date?'selected-day':''}"><td><button class="date-link" data-date="${r.date}">${r.date}${r.date===today?' · 今天':''}</button></td><td>${n(r.processed_molecules)}<div class="mini-bar" style="width:${(r.processed_molecules/max*100).toFixed(1)}%"></div></td><td>${n(r.finished_molecules)}</td><td>${n(r.c_peaks)}</td><td>${n(r.h_peaks)}</td><td>${n(r.save_operations)}</td><td>${n(r.management_operations)}</td></tr>`).join('');
+    $('aiHistoryRows').innerHTML=data.history.map(r=>`<tr class="${r.date===data.date?'selected-day':''}"><td><button class="date-link" data-date="${r.date}">${r.date}${r.date===today?' · 今天':''}</button></td><td>${n(r.ai_molecules)}</td><td>${n(r.ai_c_peaks)}</td><td>${n(r.ai_h_peaks)}</td><td>${n(r.ai_operations)}</td></tr>`).join('');
   }
   function renderTotal(s){
     const quality=s.spectrum_quality||{},held=quality.quarantined||0,p=s.annotation_processing||{},progress=s.dual_assignment_progress||{};
     const origins=s.annotation_origins||{sources:[],models:[]},sourceNames={shiftdb2:'ShiftDB2 原库',manual:'人工标注',ai:'AI 自动标注',other:'其他来源'};
-    $('annotationSources').innerHTML=origins.sources.map(r=>`<tr><td>${sourceNames[r.source]||text(r.source)}</td><td>${r.nucleus}</td><td>${n(r.peaks)}</td><td>${n(r.molecules)}</td></tr>`).join('')||'<tr><td colspan="4">暂无来源统计</td></tr>';
+    $('annotationSources').innerHTML=origins.sources.map(r=>`<tr><td><span class="source-chip ${r.source==='ai'?'ai':r.source==='manual'?'manual':''}">${sourceNames[r.source]||text(r.source)}</span></td><td>${text(r.nucleus)}</td><td>${n(r.peaks)}</td><td>${n(r.molecules)}</td></tr>`).join('')||'<tr><td colspan="4">暂无来源统计</td></tr>';
+    const manual=origins.sources.filter(r=>r.source==='manual');
+    $('manualSources').innerHTML=manual.map(r=>`<tr><td>${text(r.nucleus)}</td><td>${n(r.peaks)}</td><td>${n(r.molecules)}</td></tr>`).join('')||'<tr><td colspan="3">尚无人工归属</td></tr>';
+    const aiPeaks=nucleus=>origins.sources.filter(r=>r.source==='ai'&&r.nucleus===nucleus).reduce((sum,r)=>sum+Number(r.peaks||0),0);
+    $('aiCurrentCards').innerHTML=card('当前保留 AI C 归属',aiPeaks('13C'),'峰')+card('当前保留 AI H 归属',aiPeaks('1H'),'峰');
     $('annotationModels').innerHTML=origins.models.map(r=>`<tr><td>${text(r.model)}<br><small>${text(r.provider)}</small></td><td>${n(r.results)}</td><td>${n(r.molecules)}</td><td>${n(r.current_ai_peaks)}</td><td>${n(r.published_peaks)}</td></tr>`).join('')||'<tr><td colspan="5">尚无 AI 结果入库</td></tr>';
     const finished=Object.values(p).reduce((sum,v)=>sum+v.finished,0);
     $('totalCards').innerHTML=card('存档分子总量',s.molecules,'个')+card('存档实验谱总量',s.spectra,'条')+card('未自动隔离的存档谱',s.spectra-held,'条')+card('自动隔离谱',held,'条')+card('本轮已结束的分子',finished,'个')+card('C/H 双谱全归属分子',progress.ready_molecules,'个');
@@ -44,12 +51,13 @@
     const results=await Promise.allSettled(jobs);if(request!==sequence)return;
     const error=results.find(x=>x.status==='rejected');$('updated').classList.toggle('error',!!error);
     $('updated').textContent=error?'部分统计读取失败，请刷新重试。':`更新于 ${stamp(new Date())} · 北京时间`;
-    if(!lastDaily&&results[0].status==='rejected')$('dailyCards').textContent='工作记录暂时无法读取，请刷新重试。';
+    if(!lastDaily&&results[0].status==='rejected'){$('dailyCards').textContent='人工记录暂时无法读取，请刷新重试。';$('autoDailyCards').textContent='AI 记录暂时无法读取，请刷新重试。';}
     if(!lastTotal&&totals&&results[1].status==='rejected')$('totalCards').textContent='数据库总量暂时无法读取，请刷新重试。';
     $('refresh').disabled=false;
   }
   $('refresh').onclick=()=>refresh();$('day').onchange=()=>{if($('day').value)refresh(false);};
   $('today').onclick=()=>{$('day').value='';refresh(false);};
-  $('historyRows').onclick=event=>{const button=event.target.closest('[data-date]');if(button){$('day').value=button.dataset.date;refresh(false);}};
+  const selectHistoryDate=event=>{const button=event.target.closest('[data-date]');if(button){$('day').value=button.dataset.date;refresh(false);}};
+  $('historyRows').onclick=selectHistoryDate;$('aiHistoryRows').onclick=selectHistoryDate;
   refresh();setInterval(()=>{if(!document.hidden){if($('day').value===today)$('day').value='';refresh();}},60000);
 })();

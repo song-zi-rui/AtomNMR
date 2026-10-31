@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / 'data/assignment_database_v1/assignments.sqlite'
+DB = ROOT / 'data/assignment_database_v1/databases/assignments.sqlite'
 OUT = ROOT / 'outputs/annotation_progress_diagnosis_20261012.json'
 
 

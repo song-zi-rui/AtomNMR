@@ -603,8 +603,9 @@ def choose(path, options):
 
 class Manager:
     def __init__(self, main_path):
-        self.main_path = main_path
-        self.path = main_path.parent/'ai_annotations.sqlite'
+        from .paths import main_database, companion_database
+        self.main_path = main_database(main_path)
+        self.path = companion_database(self.main_path,'ai_annotations.sqlite')
         initialize(self.path)
         self.lock = threading.RLock()
         self.vault=credentials.Vault(self.path,store)

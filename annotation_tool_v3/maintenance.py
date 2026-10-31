@@ -8,16 +8,19 @@ import sqlite3
 import platform
 from rdkit import rdBase
 from . import core as db
+from .paths import artifacts_root, main_database
 
 
 def read_connection(path):
+    path=main_database(path)
     c=sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro",uri=True,timeout=60)
     c.row_factory=sqlite3.Row
     return c
 
 
 def backup(path):
-    folder=Path(path).parent/"backups"
+    path=main_database(path)
+    folder=artifacts_root(path)/"backups"
     folder.mkdir(exist_ok=True)
     dest=folder/("assignments_"+db.now().replace(":","").replace("+","_")+".sqlite")
     if dest.exists():
@@ -76,7 +79,7 @@ def report(path):
         for block in iter(lambda:f.read(1024*1024),b""):
             digest.update(block)
     result["filtered_sdf_hash_unchanged"]=digest.hexdigest()==result["input_metadata"]["shiftdb_sha256"]
-    folder=Path(path).parent
+    folder=artifacts_root(path)
     (folder/"database_report.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     labels={"complete_remaining":"优先：补剩余归属","both_unassigned":"第二阶段：H/C 均未归属","waiting_spectrum":"缺少一种实验谱","complete":"已存谱均有归属"}
     lines=["# 实验 NMR 归属数据库迁移报告","",f"生成时间：{result['created_at']}。这是主库快照，不是模型性能或人工标签正确率评估。","",f"主库 **{result['molecules']:,}** 个分子，**{result['spectra']:,}** 条实验谱。","","## 工作队列","","| 队列 | 分子数 |","|---|---:|"]

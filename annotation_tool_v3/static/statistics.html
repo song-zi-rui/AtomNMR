@@ -1,26 +1,36 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>数据统计 · AtomNMR</title><link rel="stylesheet" href="/statistics.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>数据统计 · AtomNMR</title><link rel="stylesheet" href="/statistics.css"><link rel="stylesheet" href="/statistics_channels.css"></head>
 <body>
 <header class="stats-header"><a class="brand" href="/">AtomNMR <span>/ 数据统计</span></a><nav><a href="/benchmark.html">AI测试对比</a> <a href="/auto.html">自动标注</a><a href="/">返回标注</a><button id="refresh">刷新统计</button></nav></header>
 <main>
-<div class="page-heading"><div><p class="eyebrow">数据与标注进度</p><h1>数据统计</h1><p class="subtitle">查看数据库总量、今天的工作和最近两周的处理记录。</p></div><p id="updated" role="status">正在读取…</p></div>
-<section aria-labelledby="dailyTitle">
-<div class="section-heading"><div><h2 id="dailyTitle">今日工作量</h2><p>北京时间 · 分子与谱峰按日去重</p></div><div class="date-controls"><label>统计日期<input id="day" type="date"></label><button id="today">回到今天</button></div></div>
-<div id="dailyCards" class="cards daily" aria-live="polite"><p>正在读取工作记录…</p></div>
-<p id="historyNote" class="footnote"></p>
-<h3>自动标注入库量（与人工分开）</h3><p class="footnote">按结果入库日期统计；导入旧 AI 结果也计入入库量，不代表当天重新调用了 API。</p><div id="autoDailyCards" class="cards"></div>
-</section>
+<div class="page-heading"><div><p class="eyebrow">数据库与标注进度</p><h1>数据统计</h1><p class="subtitle">先看数据库全貌，再查看 AI 与人工的标注记录。</p></div><p id="updated" role="status">正在读取…</p></div>
 <section aria-labelledby="totalTitle">
-<div class="section-heading"><div><h2 id="totalTitle">数据库总量</h2><p>当前数据库快照 · 不随上方日期切换</p></div></div>
+<div class="section-heading"><div><h2 id="totalTitle">数据库总览</h2><p>当前数据库快照 · 不随下方日期切换</p></div></div>
 <div id="totalCards" class="cards" aria-live="polite"><p>正在读取数据库总量…</p></div>
 <article class="panel spectrum-coverage" aria-labelledby="spectrumCoverageTitle"><h3 id="spectrumCoverageTitle">当前谱类型与归属情况</h3><p class="footnote">单位：分子。同一分子有多条谱时只计一个，按当前全部谱峰的归属情况分类。</p><div class="table-scroll"><table><thead><tr><th scope="col">当前谱类型</th><th scope="col">全归属</th><th scope="col">部分归属</th><th scope="col">完全未归属</th><th scope="col">总数</th></tr></thead><tbody id="spectrumCoverageRows"><tr><td colspan="5">正在读取谱类型统计…</td></tr></tbody><tfoot id="spectrumCoverageTotal"></tfoot></table></div><p id="spectrumCoverageNote" class="footnote"></p></article>
 <div class="two-columns"><article class="panel"><h3>归属与处理状态</h3><p class="footnote">结束任务与归属覆盖程度分别统计。</p><div class="table-scroll"><table><thead><tr><th>归属情况</th><th>尚未结束</th><th>本轮已结束</th><th>合计</th></tr></thead><tbody id="coverageRows"></tbody></table></div></article>
 <article class="panel"><h3>C/H 双谱全归属进度</h3><div id="dualProgress"></div><p class="footnote">按分子去重，包含原库已有归属。当前 C/H 谱全部峰有归属才计入；歧义及排除峰不计入。该进度不表示实验谱完整性或归属正确性。</p></article></div>
+<details class="panel source-details"><summary>查看当前归属标签的来源明细</summary><div class="table-scroll"><table><thead><tr><th>来源</th><th>核种</th><th>峰数</th><th>涉及分子</th></tr></thead><tbody id="annotationSources"></tbody></table></div><p class="footnote">同一分子可包含不同来源的标签，涉及分子数不应跨来源相加。</p></details>
 <p class="footnote">存档谱包含参考及历史版本；未自动隔离的谱仍可能被人工停用或排除。这些总量不等于可用于训练的数据量。</p>
 </section>
-<section><div class="section-heading"><h2>归属来源与 AI 模型</h2></div><div class="two-columns"><article class="panel"><h3>当前保留的归属标签</h3><div class="table-scroll"><table><thead><tr><th>来源</th><th>核种</th><th>峰数</th><th>涉及分子</th></tr></thead><tbody id="annotationSources"></tbody></table></div></article><article class="panel"><h3>已入库 AI 结果</h3><div class="table-scroll"><table><thead><tr><th>模型</th><th>结果数</th><th>分子数</th><th>当前 AI 归属峰</th><th>累计补入峰</th></tr></thead><tbody id="annotationModels"></tbody></table></div></article></div><p class="footnote">全归属进度包括原库、人工和 AI 标签；自动标注不计入人工保存/结束工作量。标签状态不等于正确性核实。涉及分子数跨来源可以重叠。</p></section>
-<section aria-labelledby="historyTitle"><div class="section-heading"><div><h2 id="historyTitle">每日工作记录</h2><p>所选日期及之前 13 天 · 点击日期查看当天明细；此表为人工工作量</p></div></div><div class="panel table-scroll"><table><thead><tr><th>日期</th><th>处理分子</th><th>结束分子</th><th>修改 C 峰</th><th>修改 H 峰</th><th>保存记录</th><th>管理操作</th></tr></thead><tbody id="historyRows"></tbody></table></div></section>
+<section aria-labelledby="dailyTitle" class="annotation-section">
+<div class="section-heading"><div><h2 id="dailyTitle">标注统计</h2><p>AI 与人工分别统计 · 共同使用下方日期 · 北京时间</p></div><div class="date-controls"><label>统计日期<input id="day" type="date"></label><button id="today">回到今天</button></div></div>
+<div class="annotation-grid">
+<section class="annotation-panel ai-panel" aria-labelledby="aiTitle"><div class="channel-heading"><span class="channel-symbol" aria-hidden="true">AI</span><div><h2 id="aiTitle">AI 标注</h2><p>自动归属与结果入库</p></div><span class="selected-date" data-selected-date>今日</span></div>
+<div id="autoDailyCards" class="cards channel-cards" aria-live="polite"><p>正在读取 AI 记录…</p></div><div id="aiCurrentCards" class="cards compact-cards"></div>
+<p class="footnote">当日数据按结果入库日期统计；导入旧结果也计入，不代表当日重新调用 API。</p>
+<div class="channel-detail"><h3>模型与累计入库</h3><div class="table-scroll"><table><thead><tr><th>模型</th><th>结果数</th><th>分子数</th><th>当前归属峰</th><th>累计补入峰</th></tr></thead><tbody id="annotationModels"></tbody></table></div></div>
+<div class="channel-detail"><h3>每日 AI 记录</h3><p class="footnote">所选日期及之前 13 天 · 点击日期切换</p><div class="table-scroll"><table><thead><tr><th>日期</th><th>入库分子</th><th>新增 C 峰</th><th>新增 H 峰</th><th>入库结果</th></tr></thead><tbody id="aiHistoryRows"></tbody></table></div></div>
+</section>
+<section class="annotation-panel manual-panel" aria-labelledby="manualTitle"><div class="channel-heading"><span class="channel-symbol" aria-hidden="true">人工</span><div><h2 id="manualTitle">人工标注</h2><p>人工编辑与处理记录</p></div><span class="selected-date" data-selected-date>今日</span></div>
+<div id="dailyCards" class="cards channel-cards" aria-live="polite"><p>正在读取人工记录…</p></div><div id="manualExtraCards" class="cards compact-cards"></div>
+<p class="footnote">分子与修改峰按日去重；AI 自动入库和原库既有标签不计入人工工作量。</p>
+<div class="channel-detail"><h3>当前保留的人工归属</h3><div class="table-scroll"><table><thead><tr><th>核种</th><th>归属峰数</th><th>涉及分子</th></tr></thead><tbody id="manualSources"></tbody></table></div></div>
+<div class="channel-detail"><h3>每日人工记录</h3><p class="footnote">所选日期及之前 13 天 · 点击日期切换</p><div class="table-scroll"><table><thead><tr><th>日期</th><th>处理分子</th><th>结束分子</th><th>修改 C 峰</th><th>修改 H 峰</th><th>保存</th><th>管理</th></tr></thead><tbody id="historyRows"></tbody></table></div></div>
+<p id="historyNote" class="footnote"></p>
+</section>
+</div></section>
 <details class="definitions"><summary>统计口径</summary><ul><li>处理分子：当天成功保存归属、备注或进行数据管理的分子。同一分子多次处理只计一个。</li><li>结束分子：当天提交结束的不同分子，允许部分归属或留空；之后重新打开不抹去当天的工作记录。</li><li>修改 C/H 峰：当天保存过修改的不同峰。同一条谱同一个峰重复修改只计一次，清空、歧义与峰备注修改也计入；统计的是工作涉及的峰，不是净新增归属。</li><li>保存记录：成功提交次数，包括自动保存与结束提交；失败或回滚不计入。</li><li>管理操作：谱修订、停用、采用版本和编号审核等操作的次数。</li><li>自动迁移、原库已有标签和打开分子浏览不计入人工工作量。数据来自本地数据库，未区分标注人员。</li></ul></details>
 </main><script src="/statistics.js"></script>
 </body></html>

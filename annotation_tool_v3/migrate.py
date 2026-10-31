@@ -635,7 +635,8 @@ def main():
     if args.stage in ("all", "legacy"):
         migrate_legacy(c)
     report = db.stats(c)
-    (args.db.parent / "migration_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    from .paths import artifacts_root
+    (artifacts_root(args.db) / "migration_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     log(db.dumps(report))
     c.close()
 
