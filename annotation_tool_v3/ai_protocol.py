@@ -71,7 +71,7 @@ def encode(context,version=VERSION):
     peak_inverse={ids[s]:{v:k for k,v in rows.items()} for s,rows in peaks.items()}
     for pair in value['pairs']:
         pair['c_id']=inverse[pair['c_id']];pair['h_id']=inverse[pair['h_id']]
-    for key in ('anchors','requested_peaks'):
+    for key in ('anchors','requested_peaks','equivalence_hints'):
         if key in value:
             for row in value[key]:
                 sid=row['spectrum_id'];row['spectrum_id']=inverse[sid];row['peak_id']=peak_inverse[sid][row['peak_id']]

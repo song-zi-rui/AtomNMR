@@ -23,6 +23,16 @@ class APIRequestCancelled(ValueError):
 class RequestControl:
     def __init__(self):
         self._lock=threading.Lock();self._sockets=set();self._cancelled=False;self._finished=False
+        self._phase=None;self._application_send_started=False
+
+    def stage(self,phase,application_send_started=False):
+        with self._lock:
+            self._phase=phase
+            self._application_send_started|=application_send_started
+
+    def transport_state(self):
+        with self._lock:
+            return {'failure_stage':self._phase,'application_send_started':self._application_send_started}
 
     def check(self):
         with self._lock:cancelled=self._cancelled and not self._finished
@@ -75,6 +85,7 @@ def current_request_control():return _current.get()
 
 
 def _addresses(host,port,control,deadline):
+    control.stage('dns')
     try:ipaddress.ip_address(host)
     except ValueError:
         done=threading.Event();result=[];errors=[]
@@ -104,6 +115,7 @@ def _connect(address,timeout,source_address,control):
                 if left<=0:raise TimeoutError('connection timed out')
                 sock.settimeout(left)
             if source_address:sock.bind(source_address)
+            control.stage('tcp_connect')
             sock.connect(target);control.check();return sock
         except Exception as exc:
             control.unregister(sock);RequestControl._close(sock);control.check();errors.append(exc)
@@ -113,11 +125,30 @@ def _connect(address,timeout,source_address,control):
 
 class _ControlledConnection:
     def __init__(self,*args,control,**kwargs):
-        self._control=control;super().__init__(*args,**kwargs)
+        self._control=control;self._connecting=False;super().__init__(*args,**kwargs)
         self._create_connection=lambda address,timeout,source_address: _connect(address,timeout,source_address,control)
 
+    def connect(self):
+        self._connecting=True
+        try:return super().connect()
+        finally:self._connecting=False
+
+    def _tunnel(self):
+        self._control.stage('proxy_tunnel')
+        return super()._tunnel()
+
     def send(self,data):
-        self._control.check();return super().send(data)
+        self._control.check()
+        if self.sock is None:
+            if not self.auto_open:raise http.client.NotConnected()
+            self.connect()
+        # CONNECT is proxy negotiation, not submission of the annotation payload.
+        if not self._connecting:self._control.stage('request_write',application_send_started=True)
+        return super().send(data)
+
+    def getresponse(self):
+        self._control.stage('response_headers')
+        return super().getresponse()
 
 
 class _HTTPConnection(_ControlledConnection,http.client.HTTPConnection):pass
@@ -125,12 +156,15 @@ class _HTTPConnection(_ControlledConnection,http.client.HTTPConnection):pass
 
 class _HTTPSConnection(_ControlledConnection,http.client.HTTPSConnection):
     def connect(self):
-        http.client.HTTPConnection.connect(self)
-        self._control.check()
-        raw=self.sock
-        self.sock=self._context.wrap_socket(raw,server_hostname=self._tunnel_host or self.host,do_handshake_on_connect=False)
-        self._control.unregister(raw);self._control.register(self.sock)
-        self.sock.do_handshake();self._control.check()
+        self._connecting=True
+        try:
+            http.client.HTTPConnection.connect(self)
+            self._control.check();self._control.stage('tls_handshake')
+            raw=self.sock
+            self.sock=self._context.wrap_socket(raw,server_hostname=self._tunnel_host or self.host,do_handshake_on_connect=False)
+            self._control.unregister(raw);self._control.register(self.sock)
+            self.sock.do_handshake();self._control.check()
+        finally:self._connecting=False
 
 
 class ControlledHTTPHandler(HTTPHandler):

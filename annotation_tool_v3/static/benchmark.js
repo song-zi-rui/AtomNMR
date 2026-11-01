@@ -4,7 +4,7 @@ const state={profiles:[],sets:[],run:null,poll:null,chosen:new Set()};
 const modelChoiceKey='atomnmr.benchmark.models.v1';
 const adapterNames={deepseek:'DeepSeek官方','deepseek-local':'DeepSeek本地推理','qwen-vllm':'Qwen本地推理','qwen-dashscope':'Qwen DashScope','openai-compatible':'通用兼容'};
 const strategies={single:'单模型 · 路由关闭',difficulty:'按结构难度二选一',cascade:'歧义峰交给第二模型'};
-const labels={running:'运行中',stopping:'正在停止本地等待',paused:'已暂停',completed:'完成',interrupted:'服务重启，可继续',attention:'已自动暂停 · 需处理',pending:'待运行',calling:'分析中',done:'完成',error:'失败'};
+const labels={running:'运行中',stopping:'停止派发 · 等待在途响应保存',paused:'已暂停',completed:'完成',interrupted:'服务重启，可继续',attention:'已自动暂停 · 需处理',pending:'待运行',calling:'分析中',done:'完成',error:'失败'};
 const fmt=n=>n==null?'—':Number(n).toLocaleString('zh-CN'),pct=n=>n==null?'—':(n*100).toFixed(1)+'%',seconds=n=>n==null?'—':n<60?n.toFixed(1)+'秒':Math.floor(n/60)+'分'+(n%60).toFixed(0)+'秒';
 async function api(path,body){let r;try{r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(e){throw Error('无法连接本地标注服务（127.0.0.1:8767）。请运行 annotation_tool_v3/启动标注系统.cmd 后刷新页面。'+(body===undefined?'':'本次请求是否提交尚未确认，请先刷新检查已有批次，避免重复提交。'));}let v;try{v=await r.json();}catch(e){throw Error('本地服务返回内容异常，请刷新页面并检查服务日志。');}if(!r.ok)throw Error(v.error||'请求失败');return v;}
 function notice(t){$('message').textContent=t;$('message').hidden=!t;}
@@ -61,7 +61,7 @@ function showRequest(run){
   if(p.reasoning_characters>0&&!p.content_characters)text+='模型正在思考，归属答案尚未开始返回；思考输出仍在接收。';}
  else text+='当前为非流式请求，需要等完整答案返回后才能显示。';
  if(q.elapsed_s>=120)text+=' 等待较久，可能是模型思考、远端排队或网关延迟；本地不会重复提交。';
- if(run.state==='stopping')text+=' 正在停止本地等待；远端计算不保证停止，当前未确认结果不会自动重试。';
+ if(run.state==='stopping')text+=' 已停止派发新分子；当前已发请求继续接收，保存完整结果后暂停，不主动断开或重复提交。';
  $('requestStatus').textContent=text;
 }
 async function refresh(){

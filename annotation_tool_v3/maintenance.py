@@ -81,7 +81,7 @@ def report(path):
     result["filtered_sdf_hash_unchanged"]=digest.hexdigest()==result["input_metadata"]["shiftdb_sha256"]
     folder=artifacts_root(path)
     (folder/"database_report.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
-    labels={"complete_remaining":"优先：补剩余归属","both_unassigned":"第二阶段：H/C 均未归属","waiting_spectrum":"缺少一种实验谱","complete":"已存谱均有归属"}
+    labels={"complete_remaining":"补充部分归属","both_unassigned":"优先：H/C 均未归属","waiting_spectrum":"缺少一种实验谱","complete":"已存谱均有归属"}
     lines=["# 实验 NMR 归属数据库迁移报告","",f"生成时间：{result['created_at']}。这是主库快照，不是模型性能或人工标签正确率评估。","",f"主库 **{result['molecules']:,}** 个分子，**{result['spectra']:,}** 条实验谱。","","## 工作队列","","| 队列 | 分子数 |","|---|---:|"]
     lines += [f"| {labels.get(k,k)} | {v:,} |" for k,v in result["queues"].items()]
     lines += ["","## 来源与字段覆盖","","| 来源 | 核种 | 实验谱 | 信号数 | 已报溶剂 | 已报温度 | 已报频率 |","|---|---|---:|---:|---:|---:|---:|"]

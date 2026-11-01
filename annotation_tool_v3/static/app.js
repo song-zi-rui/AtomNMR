@@ -47,11 +47,11 @@ async function loadList(reset=false){
   catch(error){if(request!==state.listRequest)return;$("#searchHint").textContent="检索失败，请重试："+error.message;throw error;}
   if(request!==state.listRequest)return;
   state.rows=result.rows;$("#pageNo").textContent=String(1+offset/40);$("#prevPage").disabled=offset===0;$("#nextPage").disabled=result.rows.length<40;
-  const hints={recent:"按最近保存标注、备注或数据管理操作排序；不等于已完成。",finished:"仅显示已按“结束”提交的分子；不代表谱完整或归属已核实。",imported:"按首次入库时间倒序；不等于最近修复或已标注。"};
+  const hints={recent:"按最近保存标注、备注或数据管理操作排序。",finished:"已结束分子；结束时当前实验谱自动设为完整，归属覆盖另行记录。",imported:"按首次入库时间倒序。"};
   $("#searchHint").textContent=(selection.q&&$("#searchScope").value!=="filtered"?"全库检索：已忽略下方筛选。":hints[selection.view]||"结果受当前队列、来源与完成状态筛选。")+(result.total!=null?` 共 ${result.total.toLocaleString()} 个分子 ·`:"")+` 本页 ${result.rows.length} 条。`;
   $("#list").innerHTML=result.rows.length?result.rows.map(r=>`<button class="listitem ${state.record?.id===r.id?"active":""}" data-mid="${r.id}"><strong>${escape(r.formula)}</strong><span class="done-tag">${r.task_done?'本轮已结束':'尚未结束'}</span><small>C ${r.c_assigned}/${r.c_count} · H ${r.h_assigned}/${r.h_count}</small><small>${escape(coverageLabel(r))} · ${escape(labels[r.queue])===escape(coverageLabel(r))?'':escape(labels[r.queue])+' · '}${escape(r.origin)}</small><small>${selection.view==="imported"?"入库 "+dateLabel(r.created_at):r.last_processed_at?escape(activityLabel(r.last_action))+" · "+dateLabel(r.last_processed_at):""}</small><code>${escape(r.id)}</code><code>${escape(r.smiles)}</code></button>`).join(""):"<p class='hint'>当前筛选没有结果。输入编号时可选“全库检索”；查看已保存的分子可切换“最近处理”。</p>";
 }
-function recordCursor(record,selection){const view=selection.view||"";return [view,view==="imported"?record.created_at:["recent","finished"].includes(view)?record.activity?.last_processed_at||"":record.navigation_rank??({complete_remaining:0,both_unassigned:1,waiting_spectrum:2}[record.queue]??3),record.id];}
+function recordCursor(record,selection){const view=selection.view||"";return [view,view==="imported"?record.created_at:["recent","finished"].includes(view)?record.activity?.last_processed_at||"":record.navigation_rank??({both_unassigned:0,complete_remaining:1,waiting_spectrum:2}[record.queue]??3),record.id];}
 async function goNext(done=false,direction=1){
   if(state.navigating)return state.navigating;
   if(!state.record||state.loading)return;

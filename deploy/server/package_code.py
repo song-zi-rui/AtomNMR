@@ -24,6 +24,8 @@ def collect_files(root):
     if operations_doc.exists():files.append(operations_doc)
     layout_doc=root/'docs/标注系统界面与数据库目录_20261031.md'
     if layout_doc.exists():files.append(layout_doc)
+    repair_doc=root/'docs/AI等价组重标_暂停收尾_流式修复_20261031.md'
+    if repair_doc.exists():files.append(repair_doc)
     return files
 
 def main():

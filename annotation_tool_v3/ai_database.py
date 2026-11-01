@@ -25,6 +25,10 @@ def initialize(c):
     CREATE INDEX IF NOT EXISTS ai_prediction_peak ON ai_peak_predictions(spectrum_id,peak_id,applied);
     CREATE INDEX IF NOT EXISTS annotation_origin ON annotations(origin,spectrum_id);
     CREATE INDEX IF NOT EXISTS molecule_auto_queue ON molecules(queue,id);
+    CREATE TABLE IF NOT EXISTS ai_annotation_replacements(
+      result_id TEXT NOT NULL,spectrum_id TEXT NOT NULL,peak_id TEXT NOT NULL,
+      before_json TEXT NOT NULL,after_json TEXT NOT NULL,created_at TEXT NOT NULL,
+      PRIMARY KEY(result_id,spectrum_id,peak_id));
     ''')
 
 
@@ -50,6 +54,7 @@ def publish(path,result_id,job_id,mid,input_revision,context,output,references,c
                           (result_id,mid,job_id,provider,model,output.get('response_model'),config.get('prompt_sha256'),input_revision,
                            hashlib.sha256(db.dumps(context).encode()).hexdigest(),db.dumps(context),db.dumps(output),db.dumps(references),db.now(),0,0))
                 applied,skipped,edited=0,0,[];wanted=requested(context)
+                repair_refs={(r['spectrum_id'],r.get('peak_id')):r for r in references if r.get('repair')}
                 for p in output['assignments']:
                     sid,pid=p['spectrum_id'],p['peak_id'];spec=spectra.get(sid)
                     peak=next((x for x in spec['peaks'] if x['peak_id']==pid),None) if spec else None
@@ -61,12 +66,19 @@ def publish(path,result_id,job_id,mid,input_revision,context,output,references,c
                     elif any(spec.get('conditions',{}).get(k)!=v for k,v in inputs[sid]['conditions'].items()):reason='conditions_changed'
                     elif peak.get('assignment_group'):reason='manual_unordered_group'
                     old=c.execute('SELECT * FROM annotations WHERE spectrum_id=? AND peak_id=?',(sid,pid)).fetchone()
-                    if not reason and old:reason='existing_label_preserved'
+                    if not reason and config.get('repair_policy')=='shiftdb-equivalence-repair-v1' and not old:reason='source_label_changed'
+                    if not reason and old:
+                        from . import equivalence_repair
+                        reason=(equivalence_repair.replacement_reason(peak,old,p,repair_refs.get((sid,pid)),spec,context)
+                                if config.get('repair_policy')==equivalence_repair.POLICY else 'existing_label_preserved')
                     if not reason and (sid,pid) in review_only:reason='assignment_consistency_review'
                     if not reason and p['status'] not in HARD:reason='not_a_definite_assignment'
                     did_apply=not reason
                     if did_apply:
-                        c.execute('INSERT INTO annotations VALUES(?,?,?,?,?,?,?)',
+                        if old:
+                            c.execute('INSERT INTO ai_annotation_replacements VALUES(?,?,?,?,?,?)',
+                                      (result_id,sid,pid,db.dumps(dict(old)),db.dumps(p),db.now()))
+                        c.execute('INSERT INTO annotations VALUES(?,?,?,?,?,?,?) ON CONFLICT(spectrum_id,peak_id) DO UPDATE SET status=excluded.status,atoms_json=excluded.atoms_json,note=excluded.note,origin=excluded.origin,updated_at=excluded.updated_at',
                                   (sid,pid,p['status'],db.dumps(p['atom_indices']),p['brief_reason'],origin,db.now()))
                         applied+=1;edited.append({'spectrum_id':sid,'peak_id':pid,'nucleus':inputs[sid]['nucleus']})
                     else:skipped+=1
@@ -74,8 +86,11 @@ def publish(path,result_id,job_id,mid,input_revision,context,output,references,c
                               (result_id,sid,pid,inputs[sid]['nucleus'],p['status'],db.dumps(p['atom_indices']),db.dumps(p['candidates']),
                                p['confidence'],p['brief_reason'],int(did_apply),reason))
                 c.execute('UPDATE ai_annotation_results SET applied_count=?,skipped_count=? WHERE id=?',(applied,skipped,result_id))
-                if applied:
+                from .workflow_policy import mark_complete
+                completed=mark_complete(c,mid,inputs,reason='按用户标注流程约定：AI标注结果已入库，已分析的当前实验谱设为完整。')
+                if applied or completed:
                     c.execute('UPDATE molecules SET revision=revision+1 WHERE id=?',(mid,))
+                if applied:
                     db.refresh_molecule(c,mid)
                 from . import workload
                 workload.append(c,mid,'ai_annotation',db.now(),key='ai:'+result_id,source='ai',

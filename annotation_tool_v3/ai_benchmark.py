@@ -256,8 +256,7 @@ class Service:
             if self.manager.active!=identifier:raise ValueError('此测试没有运行')
             self.manager.cancel.set()
         with closing(connect(self.path)) as c:c.execute("UPDATE experiments SET state='stopping',updated_at=? WHERE id=? AND state='running'",(db.now(),identifier));c.commit()
-        self.manager.cancel_requests()
-        return {'state':'stopping'}
+        return {'state':'stopping','pause_mode':'drain_inflight'}
 
     def resume(self,identifier):
         with self.manager.lock:

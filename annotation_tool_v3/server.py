@@ -321,6 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                     result=auto.import_history();self.server.app.stats_at=0;return self.send(result)
                 parts=self.path.strip('/').split('/')
                 if len(parts)==5 and parts[2]=='jobs':
+                    if parts[4]=='rename':return self.send(auto.rename(parts[3],payload.get('name')))
                     if parts[4]=='delete':return self.send(auto.delete(parts[3]))
                     if parts[4]=='pause':return self.send(auto.pause(parts[3]))
                     if parts[4]=='resume':return self.send(auto.resume(parts[3],payload.get('use_current_limits') is True))
@@ -383,7 +384,7 @@ def main():
     server.app = App(args.db)
     print(f"NMR experimental database: http://127.0.0.1:{args.port}/", flush=True)
     if args.open:
-        webbrowser.open(f"http://127.0.0.1:{args.port}/")
+        webbrowser.open(f"http://127.0.0.1:{args.port}/auto.html")
     try:
         server.serve_forever()
     finally:

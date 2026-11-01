@@ -35,7 +35,7 @@ def uid(prefix, *values):
     return prefix + hashlib.sha256(dumps(values).encode()).hexdigest()[:24]
 
 
-QUEUE_ORDER = "CASE queue WHEN 'complete_remaining' THEN 0 WHEN 'both_unassigned' THEN 1 WHEN 'waiting_spectrum' THEN 2 ELSE 3 END"
+QUEUE_ORDER = "CASE queue WHEN 'both_unassigned' THEN 0 WHEN 'complete_remaining' THEN 1 WHEN 'waiting_spectrum' THEN 2 ELSE 3 END"
 ACTIVE = " NOT EXISTS(SELECT 1 FROM spectrum_quality q WHERE q.spectrum_id=spectra.id AND q.decision!='passed') AND NOT EXISTS(SELECT 1 FROM curation_state cs WHERE cs.scope='spectrum' AND cs.target_id=spectra.id AND cs.state!='active')"
 COVERAGE_SQL = "CASE WHEN c_assigned+h_assigned=0 THEN 'none' WHEN c_count+h_count=c_assigned+h_assigned THEN 'full' ELSE 'partial' END"
 
@@ -169,6 +169,8 @@ def initialize(c):
     workload.initialize(c)
     from . import ai_database
     ai_database.initialize(c)
+    from . import workflow_policy
+    workflow_policy.migrate(c)
     c.commit()
 
 
@@ -467,8 +469,10 @@ def save_annotations(c, mid, payload):
         if payload.get("task_done"):
             if not allowed:
                 raise ValueError("没有通过检查的实验谱，不能标为完成。")
-            # Finishing records the annotator's pass, independently of coverage.
-            # Empty assignments remain unknown; do not synthesize annotations.
+            from .workflow_policy import mark_complete
+            mark_complete(c,mid,allowed,reason='按用户标注流程约定：结束该分子时，将当前实验谱设为完整。')
+            # Unknown assignments remain unknown: spectrum completeness is not
+            # a fabricated peak-to-atom label or a full-coverage declaration.
         c.execute("UPDATE molecules SET revision=revision+1,note=?,task_done=? WHERE id=?", (str(payload.get("note", ""))[:10000], int(bool(payload.get("task_done"))), mid))
         refresh_molecule(c, mid)
         touch_activity(c, mid, 'finish' if payload.get('task_done') else 'save', details={
@@ -540,7 +544,7 @@ def is_formula_query(q):
 
 
 def queue_rank(queue):
-    return {'complete_remaining': 0, 'both_unassigned': 1, 'waiting_spectrum': 2}.get(queue, 3)
+    return {'both_unassigned': 0, 'complete_remaining': 1, 'waiting_spectrum': 2}.get(queue, 3)
 
 
 def listing(c, params):

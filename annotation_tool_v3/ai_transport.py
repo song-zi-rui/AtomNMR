@@ -4,6 +4,7 @@ import re
 import socket
 import ssl
 import time
+from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from contextlib import contextmanager
 from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
@@ -81,6 +82,9 @@ def http_error(response, *, key='', elapsed_s=None):
     error=APIRequestError(message,status=status,uncertain=status>=500)
     error.diagnostics.update(error_kind='http',provider_error={k:v for k,v in provider.items() if v},
                              request_id=request_id or None,retry_after=retry or None)
+    limit=re.search(r'concurrency\s+limit\s+(?:of\s+)?(\d+)',provider.get('message',''),re.I)
+    if status==429 and limit and 1<=int(limit[1])<=100000:
+        error.diagnostics['provider_concurrency_limit']=int(limit[1])
     if elapsed_s is not None:error.diagnostics['elapsed_s']=elapsed_s
     rate_headers={k:_error_text(v,key,120) for k,v in headers.items()
                   if k in ('x-ratelimit-limit-requests','x-ratelimit-remaining-requests','x-ratelimit-reset-requests',
@@ -89,9 +93,13 @@ def http_error(response, *, key='', elapsed_s=None):
     return error
 
 
-def network_error(exc):
+def network_error(exc, *, transport_state=None, elapsed_s=None, proxy_used=None):
     """Keep the failure layer explicit without relaxing TLS or exposing credentials."""
-    reason=getattr(exc,'reason',exc)
+    # URLError.reason can wrap an exception, but SSLError.reason is a STRING
+    # (e.g. UNEXPECTED_EOF_WHILE_READING). Do not discard the real SSL exception.
+    reason=exc;seen=set()
+    while isinstance(getattr(reason,'reason',None),BaseException) and id(reason) not in seen:
+        seen.add(id(reason));reason=reason.reason
     if isinstance(reason,ssl.SSLCertVerificationError):
         detail=str(getattr(reason,'verify_message','') or reason).replace('\n',' ')[:240]
         error=APIRequestError('HTTPS证书验证失败，未完成TLS握手；归属请求未提交到模型接口。请检查服务器证书链、CA及访问域名。详情：'+detail,
@@ -110,6 +118,12 @@ def network_error(exc):
     elif isinstance(reason,TimeoutError):
         error=APIRequestError('API连接或读取超时；远端处理结果未知，不自动重试。请检查服务排队、响应时间和网络。',uncertain=True)
         error.diagnostics.update(error_kind='timeout')
+    elif isinstance(reason,IncompleteRead):
+        error=APIRequestError('响应正文未收完整，连接已结束；远端处理结果未知，不自动重试。',uncertain=True)
+        error.diagnostics.update(error_kind='incomplete_read',partial_bytes=len(reason.partial),expected_more_bytes=reason.expected)
+    elif isinstance(reason,RemoteDisconnected):
+        error=APIRequestError('远端在完整响应前关闭连接；远端处理结果未知，不自动重试。',uncertain=True)
+        error.diagnostics.update(error_kind='remote_disconnected')
     elif isinstance(reason,ConnectionResetError):
         error=APIRequestError('API连接被中途重置；远端处理结果未知，不自动重试。请检查服务端和代理日志。',uncertain=True)
         error.diagnostics.update(error_kind='connection_reset')
@@ -117,6 +131,24 @@ def network_error(exc):
         error=APIRequestError('连接失败或响应中断；远端处理结果未知，不自动重试，请检查网络与服务日志。',uncertain=True)
         error.diagnostics.update(error_kind='network')
     error.diagnostics['exception_type']=type(reason).__name__
+    error.diagnostics['outer_exception_type']=type(exc).__name__
+    if isinstance(reason,ssl.SSLError):
+        for attr in ('reason','library'):
+            label=getattr(reason,attr,None)
+            if isinstance(label,str) and re.fullmatch(r'[A-Z0-9_]{1,160}',label):
+                error.diagnostics['ssl_'+attr]=label
+    for key in ('errno','winerror'):
+        if type(getattr(reason,key,None)) is int:error.diagnostics[key]=getattr(reason,key)
+    state=transport_state or {}
+    if state.get('failure_stage'):
+        error.diagnostics.update(state)
+        if not state.get('application_send_started') and state['failure_stage'] in ('dns','tcp_connect','proxy_tunnel','tls_handshake'):
+            stages={'dns':'解析地址','tcp_connect':'建立连接','proxy_tunnel':'建立代理隧道','tls_handshake':'TLS握手'}
+            error.uncertain=False;error.diagnostics['request_outcome_uncertain']=False
+            if error.diagnostics['error_kind'] not in ('tls_certificate','dns','connection_refused'):
+                error.args=(f"连接在{stages[state['failure_stage']]}阶段中断；归属请求尚未提交。请检查网络或代理后手动重试。",)
+    if elapsed_s is not None:error.diagnostics['elapsed_s']=elapsed_s
+    if proxy_used is not None:error.diagnostics['proxy_used']=bool(proxy_used)
     return error
 
 
@@ -157,11 +189,26 @@ def repetitive_output_period(text):
     return None
 
 
-def read_sse(response, *, started, timeout):
+STREAM_EVENT_LIMIT = 1024 * 1024
+STREAM_ANSWER_LIMIT = 8 * 1024 * 1024
+
+
+def stream_wire_limit(max_tokens=None):
+    # SSE repeats JSON envelope fields for each tiny token delta. Wire bytes
+    # are not answer bytes or tokens. Reasoning is counted, never accumulated.
+    tokens=max_tokens if type(max_tokens) is int and max_tokens>0 else 32768
+    return max(64*1024*1024,min(256*1024*1024,tokens*2048))
+
+
+def read_sse(response, *, started, timeout, max_tokens=None):
     content = []
     usage = {}
     meta = {'stream': True, 'chunks': 0, 'content_characters': 0, 'reasoning_characters': 0,
-            'ttft_ms': None}
+            'ttft_ms': None, 'wire_bytes':0,'wire_limit_bytes':stream_wire_limit(max_tokens),
+            'event_limit_bytes':STREAM_EVENT_LIMIT,'answer_limit_characters':STREAM_ANSWER_LIMIT,
+            'http_status':getattr(response,'status',None) or 200,'first_content_ms':None,
+            'last_event_elapsed_ms':None,'last_content_elapsed_ms':None,'last_reasoning_elapsed_ms':None,
+            'keep_alive_comments':0}
     result = {'choices': [], 'usage': usage}
     finish = None
     done = False
@@ -170,6 +217,16 @@ def read_sse(response, *, started, timeout):
     last_report = 0
     answer_tail = ''
     repeat_checked_at = 0
+    pending_bytes = 0
+
+    def oversized(kind,limit):
+        report(True)
+        names={'stream_wire_limit':'累计传输量','stream_event_limit':'单个数据事件','stream_answer_limit':'最终答案字符数'}
+        error=APIRequestError('流式'+names[kind]+'超过本地保护上限（'+str(limit)+'）；停止接收并暂停派发，已发其他请求继续收尾。',
+                              status=200,uncertain=finish is None,usage=usage)
+        error.diagnostics.update(error_kind=kind,transport_error=False,stream_transport=dict(meta),
+                                 elapsed_s=time.perf_counter()-started,limit=limit)
+        return error
 
     def report(force=False):
         nonlocal last_report
@@ -179,11 +236,12 @@ def read_sse(response, *, started, timeout):
             last_report = now
 
     def event():
-        nonlocal finish, done, answer_tail, repeat_checked_at
+        nonlocal finish, done, answer_tail, repeat_checked_at,pending_bytes
         if not pending:
             return
         text = '\n'.join(pending)
         pending.clear()
+        pending_bytes=0
         if text.strip() == '[DONE]':
             done = True
             return
@@ -196,9 +254,12 @@ def read_sse(response, *, started, timeout):
         if value.get('error'):
             raise APIRequestError('流式接口报告服务错误；本批次停止，不自动重试。', uncertain=True, usage=usage)
         meta['chunks'] += 1
+        meta['last_event_elapsed_ms']=(time.perf_counter()-started)*1000
         for key in ('id', 'model', 'created'):
             if value.get(key) is not None:
                 result[key] = value[key]
+        if result.get('id') is not None:meta['response_id']=result['id']
+        if result.get('model') is not None:meta['response_model']=result['model']
         if isinstance(value.get('usage'), dict):
             usage.update(value['usage'])
         for choice in value.get('choices') or []:
@@ -209,9 +270,15 @@ def read_sse(response, *, started, timeout):
             if isinstance(answer, str):
                 content.append(answer)
                 meta['content_characters'] += len(answer)
+                if meta['content_characters']>STREAM_ANSWER_LIMIT:
+                    raise oversized('stream_answer_limit',STREAM_ANSWER_LIMIT)
                 answer_tail=(answer_tail+answer)[-16384:]
+                if answer:
+                    meta['last_content_elapsed_ms']=(time.perf_counter()-started)*1000
+                    if meta['first_content_ms'] is None:meta['first_content_ms']=meta['last_content_elapsed_ms']
             if isinstance(reasoning, str):
                 meta['reasoning_characters'] += len(reasoning)
+                if reasoning:meta['last_reasoning_elapsed_ms']=(time.perf_counter()-started)*1000
             if (answer or reasoning) and meta['ttft_ms'] is None:
                 meta['ttft_ms'] = (time.perf_counter() - started) * 1000
             if choice.get('finish_reason') is not None:
@@ -243,13 +310,27 @@ def read_sse(response, *, started, timeout):
             error.diagnostics.update(error_kind='total_timeout',failure_stage=stage,transport_error=False,
                                      elapsed_s=elapsed,timeout_s=timeout,stream_transport=dict(meta))
             raise error
-        line = response.readline(1024 * 1024 + 1)
+        try:line = response.readline(STREAM_EVENT_LIMIT + 1)
+        except (OSError,HTTPException) as exc:
+            if control:control.check()
+            if finish is not None:
+                # A provider finish event establishes completion even if the
+                # optional usage/[DONE] trailer is lost. Decode still validates
+                # finish_reason and the entire structured answer before use.
+                meta.update(trailer_interrupted=True,trailer_exception=type(exc).__name__)
+                break
+            error=network_error(exc,transport_state={'failure_stage':'response_body','application_send_started':True},
+                                elapsed_s=time.perf_counter()-started)
+            error.status=meta['http_status'];error.diagnostics['http_status']=meta['http_status']
+            error.usage=dict(usage);error.diagnostics['stream_transport']=dict(meta)
+            raise error from None
         if not line:
             event()
             break
         size += len(line)
-        if size > 8 * 1024 * 1024 or len(line) > 1024 * 1024:
-            raise APIRequestError('流式响应过大；停止接收并暂停批次。', uncertain=True, usage=usage)
+        meta['wire_bytes']=size
+        if size>meta['wire_limit_bytes']:raise oversized('stream_wire_limit',meta['wire_limit_bytes'])
+        if len(line)>STREAM_EVENT_LIMIT:raise oversized('stream_event_limit',STREAM_EVENT_LIMIT)
         try:
             text = line.decode('utf-8').rstrip('\r\n')
         except UnicodeError:
@@ -258,11 +339,16 @@ def read_sse(response, *, started, timeout):
             event()
         elif text.startswith('data:'):
             pending.append(text[5:].lstrip(' '))
+            pending_bytes+=len(line)
+            if pending_bytes>STREAM_EVENT_LIMIT:raise oversized('stream_event_limit',STREAM_EVENT_LIMIT)
+        elif text.startswith(':'):
+            meta['keep_alive_comments']+=1
         elif text.lstrip().lower().startswith(('<!doctype html', '<html')):
             raise APIRequestError('API地址返回了网页；请核对Base URL的API路径。')
     if finish is None:
         raise APIRequestError('流式连接结束，但未收到完整结束标记；已暂停批次，不自动重复请求。', uncertain=True, usage=usage)
     report(True)
+    meta['done_marker_received']=done
     result.update(choices=[{'index': 0, 'finish_reason': finish, 'message': {'role': 'assistant', 'content': ''.join(content)}}],
                   _transport=meta)
     return result

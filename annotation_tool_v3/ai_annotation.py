@@ -24,6 +24,7 @@ from . import local_secrets
 from . import credentials
 from . import ai_protocol as protocol
 from . import api_tls
+from .ai_json_recovery import close_missing_root_object
 from .ai_consistency import review_issues
 from .ai_cancellation import APIRequestCancelled,RequestControl,capture_request_control,current_request_control,ControlledHTTPHandler,ControlledHTTPSHandler
 from .ai_transport import APIRequestError,capture_progress,notify_progress,read_sse,should_pause_batch,network_error,http_error,repetitive_output_period
@@ -142,13 +143,13 @@ def origin_group(origin):
     return None
 
 
-def prepare(record):
+def prepare(record,require_dual=True):
     """Allowlist-only context; annotations, provenance and free-text notes stay local."""
     if not record.get('training_eligible', True):
         raise ValueError('分子已停用或排除使用')
     spectra = [s for s in record['spectra'] if s.get('editable', True)
                and s.get('quality', {}).get('decision') not in ('quarantined', 'not_checked')]
-    if {s['nucleus'] for s in spectra} != {'13C', '1H'}:
+    if not spectra or (require_dual and {s['nucleus'] for s in spectra} != {'13C', '1H'}):
         raise ValueError('需要当前可用、通过来源检查的 H/C 双谱')
     mol = Chem.MolFromSmiles(record['smiles'])
     atoms = []
@@ -351,7 +352,7 @@ def normalize_base_url(value):
 
 
 def request_api(key, method, endpoint, payload=None, timeout=30,base_url='https://api.deepseek.com',tls_config=None):
-    control=current_request_control()
+    parent_control=current_request_control();control=parent_control or RequestControl()
     if control:control.check()
     started=time.perf_counter();stream=bool(payload and payload.get('stream'))
     notify_progress(phase='connecting',stream=stream)
@@ -364,12 +365,11 @@ def request_api(key, method, endpoint, payload=None, timeout=30,base_url='https:
                   data=db.dumps(payload).encode() if payload is not None else None,
                   headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}, method=method)
     try:
-        if control:
-            control.check();opener=build_opener(NoRedirect,ControlledHTTPHandler(control),ControlledHTTPSHandler(control,context))
-        else:opener=build_opener(NoRedirect,HTTPSHandler(context=context)) if context is not None else build_opener(NoRedirect)
+        control.check();opener=build_opener(NoRedirect,ControlledHTTPHandler(control),ControlledHTTPSHandler(control,context))
         with opener.open(req, timeout=timeout) as response:
+            control.stage('response_body')
             if stream and 'application/json' not in response.headers.get('Content-Type','').lower():
-                value=read_sse(response,started=started,timeout=timeout)
+                value=read_sse(response,started=started,timeout=timeout,max_tokens=(payload or {}).get('max_tokens'))
                 if control:control.seal()
                 return value
             notify_progress(phase='waiting_result',stream=False)
@@ -390,10 +390,13 @@ def request_api(key, method, endpoint, payload=None, timeout=30,base_url='https:
         raise error from None
     except (URLError, TimeoutError, OSError, HTTPException) as exc:
         if control:control.check()
-        raise network_error(exc) from None
+        raise network_error(exc,transport_state=control.transport_state(),elapsed_s=time.perf_counter()-started,
+                            proxy_used=req.has_proxy() or bool(getattr(req,'_tunnel_host',None))) from None
     except Exception:
         if control:control.check()
         raise
+    finally:
+        if parent_control is None:control.close()
 
 
 def complete(key, config, context):
@@ -475,28 +478,49 @@ def decode_response(envelope,config,context,recover=False):
             message = 'API 未完整返回结果；终止原因：' + str(finish_reason or '未提供')
         raise AIResponseError(message,usage,diagnostics,envelope)
     text = envelope.get('content') or ''
+    json_recovery=None
     if not text.strip():
         raise AIResponseError('API 返回空内容',usage,diagnostics,envelope)
     try:
         value = json.loads(text,object_pairs_hook=protocol.unique_object_pairs) if config.get('wire_format')==protocol.OBJECT_VERSION else json.loads(text)
-    except (ValueError, TypeError):
-        raise AIResponseError('API 未返回合法 JSON',usage,diagnostics,envelope) from None
+    except (ValueError, TypeError) as exc:
+        candidate=close_missing_root_object(text)
+        diagnostics.update(error_kind='invalid_json',json_root_closure_available=candidate is not None,
+            json_error={'message':getattr(exc,'msg',str(exc)),'position':getattr(exc,'pos',None),
+                        'line':getattr(exc,'lineno',None),'column':getattr(exc,'colno',None),
+                        'content_characters':len(text) if isinstance(text,str) else None})
+        if not recover or candidate is None:
+            hint='；仅缺最外层右花括号，可尝试本地恢复已保存响应' if candidate is not None else ''
+            raise AIResponseError('API 未返回合法 JSON'+hint,usage,diagnostics,envelope) from None
+        # Explicit existing local-recovery path only. finish_reason==stop was
+        # already checked; never repair a dropped connection or length cutoff.
+        value=json.loads(candidate,object_pairs_hook=protocol.unique_object_pairs)
+        json_recovery={'kind':'append_missing_root_brace','appended':'}',
+            'original_sha256':hashlib.sha256(text.encode()).hexdigest(),
+            'repaired_sha256':hashlib.sha256(candidate.encode()).hexdigest()}
     try:
         version=config.get('wire_format')
         if version in protocol.SUPPORTED_VERSIONS:
             _,mapping=protocol.encode(context,version=version)
             value=protocol.decode_v3(value,mapping,context) if version==protocol.OBJECT_VERSION else protocol.decode(value,mapping)
+        if json_recovery:
+            rows=value.get('assignments',[]) if isinstance(value,dict) else []
+            actual=[(r.get('spectrum_id'),r.get('peak_id')) for r in rows if isinstance(r,dict)]
+            if len(actual)!=len(rows) or len(actual)!=len(set(actual)) or set(actual)!=protocol.requested(context):
+                raise ValueError('本地补闭合不能补造、遗漏或重复目标峰，请重新检查原始响应')
+            validate_output(value,context)  # Retain all normal atom/nucleus/status checks.
         if version in protocol.SUPPORTED_VERSIONS or recover:
             output=normalize_output(value,context)
-            if version==protocol.OBJECT_VERSION and 'requested_peaks' in context:
+            if (version==protocol.OBJECT_VERSION or json_recovery) and 'requested_peaks' in context:
                 wanted=protocol.requested(context)
                 output['assignments']=[r for r in output['assignments'] if (r['spectrum_id'],r['peak_id']) in wanted]
-                # v3 already required an explicit result for every requested key.
+                # v3 / terminal-brace recovery already required every target.
                 output['missing_rows']=0
         else:output=validate_output(value,context)
     except (ValueError,TypeError) as exc:
         raise AIResponseError(str(exc),usage,diagnostics,envelope) from None
     output['response_model'] = diagnostics.get('response_model')
+    if json_recovery:diagnostics.update(error_kind='local_json_recovery',local_json_recovery=json_recovery)
     output['response_id'] = diagnostics.get('response_id')
     output['api_diagnostics'] = diagnostics
     return output
@@ -763,8 +787,7 @@ class Manager:
             self.cancel.set()
         with closing(store(self.path)) as c:
             c.execute("UPDATE runs SET state='stopping',updated_at=? WHERE id=? AND state='running'",(db.now(),run_id));c.commit()
-        self.cancel_requests()
-        return {'state':'stopping'}
+        return {'state':'stopping','pause_mode':'drain_inflight'}
 
     def resume(self,run_id,retry_errors=False):
         with self.lock:

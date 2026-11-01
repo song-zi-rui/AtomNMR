@@ -2,13 +2,14 @@ param([int]$Port = 8767, [switch]$Foreground, [switch]$NoOpen)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $serviceUrl = 'http://127.0.0.1:' + $Port
+$launchUrl = $serviceUrl + '/auto.html'
 
 # Reuse the current server; launching this twice must not replace an active job.
 try {
     $existing = Invoke-RestMethod -Uri ($serviceUrl + '/api/health') -TimeoutSec 2
 } catch { $existing = $null }
 if ($existing -and $existing.service -eq 'atomnmr' -and $existing.status -eq 'ok') {
-    if (-not $NoOpen) { Start-Process $serviceUrl -WindowStyle Hidden }
+    if (-not $NoOpen) { Start-Process $launchUrl -WindowStyle Hidden }
     Write-Output ('AtomNMR already running: ' + $serviceUrl)
     return
 }
@@ -17,7 +18,7 @@ try {
     $legacy = Invoke-RestMethod -Uri ($serviceUrl + '/api/benchmark/runs') -TimeoutSec 2
 } catch { $legacy = $null }
 if ($legacy -and $legacy.PSObject.Properties.Name -contains 'runs') {
-    if (-not $NoOpen) { Start-Process $serviceUrl -WindowStyle Hidden }
+    if (-not $NoOpen) { Start-Process $launchUrl -WindowStyle Hidden }
     Write-Output ('AtomNMR already running: ' + $serviceUrl)
     return
 }
@@ -38,10 +39,13 @@ $stamp = (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + [guid]::NewGuid().ToString
 $outLog = Join-Path $logDir ($stamp + '.out.log')
 $errLog = Join-Path $logDir ($stamp + '.err.log')
 $process = Start-Process -FilePath $pythonPath -ArgumentList @('-u','-m','annotation_tool_v3.server','--port',"$Port") -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
-for ($attempt = 0; $attempt -lt 30; $attempt++) {
+# Schema/index upgrades may scan the large local database on the first start.
+# Keep observing this one process rather than reporting failure and launching a duplicate.
+$startupDeadline = (Get-Date).AddMinutes(5)
+while ((Get-Date) -lt $startupDeadline) {
     try { $health = Invoke-RestMethod -Uri ($serviceUrl + '/api/health') -TimeoutSec 1 } catch { $health = $null }
     if ($health -and $health.service -eq 'atomnmr' -and $health.status -eq 'ok') {
-        if (-not $NoOpen) { Start-Process $serviceUrl -WindowStyle Hidden }
+        if (-not $NoOpen) { Start-Process $launchUrl -WindowStyle Hidden }
         Write-Output ('AtomNMR started: ' + $serviceUrl + ' (PID ' + $health.pid + ')')
         return
     }
