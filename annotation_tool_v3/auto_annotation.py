@@ -475,15 +475,40 @@ class Service:
             value=dict(job);value['config']=json.loads(value.pop('config_json'))
             value['usage']=json.loads(value.pop('usage_totals_json'))
             value['execution']=self.capacity(value['config'])
-            items=c.execute('SELECT * FROM auto_items WHERE job_id=?'+(" AND state='error'" if result_state=='error' else '')+' ORDER BY id DESC LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
-            value['counts']={'done':job['success'],'error':job['failures']}
+            resolved_clause='''NOT EXISTS (SELECT 1 FROM auto_items later
+                WHERE later.molecule_id=i.molecule_id AND later.state='done'
+                  AND later.id>i.id AND later.job_id!=i.job_id)'''
+            filter_clause=(" AND i.state='error' AND "+resolved_clause) if result_state=='error' else ''
+            items=c.execute('''SELECT i.*,
+                    later_job.id AS resolved_job_id,later_job.name AS resolved_job_name,
+                    later_job.updated_at AS resolved_at
+                FROM auto_items i
+                LEFT JOIN auto_jobs later_job ON later_job.id=(
+                    SELECT later.job_id FROM auto_items later
+                    WHERE later.molecule_id=i.molecule_id AND later.state='done'
+                      AND later.id>i.id AND later.job_id!=i.job_id
+                    ORDER BY later.id DESC LIMIT 1)
+                WHERE i.job_id=?'''+filter_clause+' ORDER BY i.id DESC LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
+            resolved_count=c.execute('''SELECT count(*) FROM auto_items i
+                WHERE i.job_id=? AND i.state='error' AND EXISTS (
+                    SELECT 1 FROM auto_items later WHERE later.molecule_id=i.molecule_id
+                      AND later.state='done' AND later.id>i.id AND later.job_id!=i.job_id)''',(job['id'],)).fetchone()[0]
+            raw_failures=c.execute("SELECT count(*) FROM auto_items WHERE job_id=? AND state='error'",(job['id'],)).fetchone()[0]
+            value['counts']={'done':job['success'],'error':max(0,raw_failures-resolved_count),'resolved':resolved_count}
             value['counts']['skipped']=c.execute("SELECT count(*) FROM auto_items WHERE job_id=? AND state='skipped'",(job['id'],)).fetchone()[0]
             if job['scope']=='equivalence_repair':
                 value['counts']['skipped']=job['skipped']
                 value['repair_queue']={r[0]:r[1] for r in c.execute('SELECT state,count(*) FROM auto_repair_candidates WHERE job_id=? GROUP BY state',(job['id'],))}
             for state in ('pending','calling','responded','received'):
                 value['counts'][state]=c.execute('SELECT count(*) FROM auto_items WHERE job_id=? AND state=?',(job['id'],state)).fetchone()[0]
-            value['items']=[{k:r[k] for k in ('id','molecule_id','formula','state','error','elapsed','updated_at')}|{'publication':json.loads(r['publication_json'] or '{}')} for r in items]
+            value['items']=[]
+            for r in items:
+                row={k:r[k] for k in ('id','molecule_id','formula','state','error','elapsed','updated_at')}
+                row['publication']=json.loads(r['publication_json'] or '{}')
+                row['resolved_by']=({'job_id':r['resolved_job_id'],'name':r['resolved_job_name'] or ('任务 '+r['resolved_job_id'][:8]),'completed_at':r['resolved_at']}
+                                    if r['state']=='error' and r['resolved_job_id'] else None)
+                if row['resolved_by']:row['state']='resolved'
+                value['items'].append(row)
             calls=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state='calling' ORDER BY id",(job['id'],)).fetchall()
             value['current_requests']=[]
             value['current_request']=None
@@ -522,6 +547,14 @@ class Service:
                     return '此分子已有后续保存的人工标注，已跳过，不再调用 API'
         return None
 
+    @staticmethod
+    def _later_success(c,source):
+        """Find a later successful annotation while preserving the source failure record."""
+        return c.execute('''SELECT i.id,i.job_id,j.name,i.updated_at
+            FROM auto_items i LEFT JOIN auto_jobs j ON j.id=i.job_id
+            WHERE i.molecule_id=? AND i.state='done' AND i.id>? AND i.job_id!=?
+            ORDER BY i.id DESC LIMIT 1''',(source['molecule_id'],source['id'],source['job_id'])).fetchone()
+
     def retry_failed(self,identifier,item_id=None,mode='failed'):
         """New finite retry job; successful source items and the continuous cursor stay intact."""
         if item_id is not None and (type(item_id) is not int or item_id<1):raise ValueError('失败项目编号无效')
@@ -537,9 +570,11 @@ class Service:
                     from . import equivalence_repair
                     config=equivalence_repair.config(config)
                 sql="SELECT * FROM auto_items WHERE job_id=? AND state="+ ("'done'" if mode in ('issues','uncertain') else "'error'")
+                if mode=='failed':
+                    sql+=" AND NOT EXISTS (SELECT 1 FROM auto_items later WHERE later.molecule_id=auto_items.molecule_id AND later.state='done' AND later.id>auto_items.id AND later.job_id!=auto_items.job_id)"
                 rows=c.execute(sql+(' AND id=?' if item_id is not None else '')+' ORDER BY id',
                                (identifier,item_id) if item_id is not None else (identifier,)).fetchall()
-                if not rows:raise ValueError('没有符合条件的失败项；只支持重试此任务中的失败记录')
+                if not rows:raise ValueError('没有尚未解决的失败项；已在后续任务完成标注的分子不需要重试')
                 if mode=='local':
                     rows=[r for r in rows if r['raw_response_json'] and json.loads(r['raw_response_json'])['diagnostics'].get('finish_reason')=='stop']
                     if not rows:raise ValueError('没有已完整保存的原始响应；旧失败项无法凭空恢复，截断结果仍需重新请求')
@@ -586,10 +621,13 @@ class Service:
     def item(self,identifier):
         with closing(ai.store(self.path)) as c:
             row=c.execute('SELECT * FROM auto_items WHERE id=?',(int(identifier),)).fetchone()
+            resolved=self._later_success(c,row) if row and row['state']=='error' else None
         if not row:raise KeyError(identifier)
         item=dict(row)
         for key in ('input','reference','output','usage','diagnostics','publication','request_config','raw_response'):
             item[key]=json.loads(item.pop(key+'_json') or ('[]' if key=='reference' else 'null'))
+        item['resolved_by']=({'job_id':resolved['job_id'],'name':resolved['name'] or ('任务 '+resolved['job_id'][:8]),'completed_at':resolved['updated_at']} if resolved else None)
+        if resolved:item['state']='resolved'
         return item
 
     def analyze(self,identifier):
