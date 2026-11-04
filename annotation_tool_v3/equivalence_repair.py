@@ -47,8 +47,11 @@ def prepare(record):
 
 def config(value):
     from .ai_annotation import SYSTEM
-    prompt=value.get('system_prompt',SYSTEM)+'\n'+PROMPT
-    return dict(value,repair_policy=POLICY,provider_parallelism_cap=4,
+    base=value.get('system_prompt',SYSTEM);suffix='\n'+PROMPT
+    prompt=base if base.endswith(suffix) else base+suffix
+    learned_cap=value.get('provider_parallelism_cap') if value.get('provider_limit_note') else None
+    cap=min(16,learned_cap) if type(learned_cap) is int and learned_cap>0 else 16
+    return dict(value,repair_policy=POLICY,provider_parallelism_cap=cap,
                 system_prompt=prompt,prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest())
 
 

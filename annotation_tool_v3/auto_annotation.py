@@ -39,8 +39,14 @@ def initialize(c):
       state TEXT NOT NULL,output_json TEXT,usage_json TEXT,error TEXT,diagnostics_json TEXT,
       publication_json TEXT,credential_id TEXT,elapsed REAL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
       UNIQUE(job_id,molecule_id));
+    CREATE TABLE IF NOT EXISTS auto_item_attempts(
+      id INTEGER PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES auto_items(id) ON DELETE CASCADE,
+      attempt_no INTEGER NOT NULL,state TEXT NOT NULL,error TEXT,usage_json TEXT,diagnostics_json TEXT,
+      elapsed REAL,request_config_json TEXT,raw_response_json TEXT,output_json TEXT,publication_json TEXT,
+      archived_at TEXT NOT NULL,UNIQUE(item_id,attempt_no));
     CREATE INDEX IF NOT EXISTS auto_item_job ON auto_items(job_id,id);
     CREATE INDEX IF NOT EXISTS auto_item_job_state ON auto_items(job_id,state,id);
+    CREATE INDEX IF NOT EXISTS auto_attempt_item ON auto_item_attempts(item_id,attempt_no);
     CREATE TABLE IF NOT EXISTS auto_repair_candidates(
       job_id TEXT NOT NULL,molecule_id TEXT NOT NULL,priority INTEGER NOT NULL,
       state TEXT NOT NULL DEFAULT 'pending',reason TEXT,PRIMARY KEY(job_id,molecule_id));
@@ -243,19 +249,24 @@ class Service:
                     if any(current[k]!=old[k] for k in ('model','thinking')):
                         raise ValueError('恢复原任务只调整 token 和超时；请保持模型及思考开关一致，换模型请新建任务')
                     keys=('max_tokens','timeout','reasoning_effort','wire_format','assignment_mode','policy','system_prompt','prompt_sha256','base_url','api_adapter','json_mode','stream','provider','tls_policy','ca_file','ca_sha256','tls_origin','parallelism','parallel_strategy')
+                    updated=dict(old)
                     if any(current[k]!=old.get(k) for k in keys):
                         # Preserve old request settings before revising future limits.
                         c.execute("UPDATE auto_items SET request_config_json=? WHERE job_id=? AND request_config_json IS NULL AND state!='pending'",(db.dumps(old),identifier))
-                        updated=dict(old)
                         updated['limit_history']=[*old.get('limit_history',[]),{'changed_at':db.now(),
                             'old_max_tokens':old['max_tokens'],'max_tokens':current['max_tokens'],
                             'old_timeout':old['timeout'],'timeout':current['timeout']}]
                         updated['config_history']=[*old.get('config_history',[]),{'changed_at':db.now(),
                             'old':{k:old.get(k) for k in keys if k!='system_prompt'},'new':{k:current[k] for k in keys if k!='system_prompt'}}]
                         updated.update({k:current[k] for k in keys})
-                        if row['scope']=='equivalence_repair':
-                            from . import equivalence_repair
-                            updated=equivalence_repair.config(updated)
+                    if updated.get('repair_policy'):
+                        from . import equivalence_repair
+                        previous_cap=updated.get('provider_parallelism_cap')
+                        updated=equivalence_repair.config(updated)
+                        if updated.get('provider_parallelism_cap')!=previous_cap:
+                            updated['provider_cap_history']=[*old.get('provider_cap_history',[]),{'changed_at':db.now(),
+                                'old':previous_cap,'new':updated['provider_parallelism_cap'],'reason':'复查任务并发策略调整'}]
+                    if updated!=old:
                         c.execute('UPDATE auto_jobs SET config_json=? WHERE id=?',(db.dumps(updated),identifier))
                 c.execute("UPDATE auto_jobs SET state='running',error=NULL,updated_at=? WHERE id=?",(db.now(),identifier));c.commit()
             self.manager.active=identifier;self.manager.cancel.clear()
@@ -318,7 +329,9 @@ class Service:
 
     def _execute(self,item,config):
         identifier=item['job_id']
-        source_id=config.get('retry_source_items',{}).get(item['molecule_id'])
+        if item['request_config_json']:
+            config=json.loads(item['request_config_json'])
+        source_id=config.get('retry_source_item_id') or config.get('retry_source_items',{}).get(item['molecule_id'])
         if source_id:
             with closing(ai.store(self.path)) as c:
                 source=c.execute('SELECT * FROM auto_items WHERE id=?',(source_id,)).fetchone()
@@ -327,7 +340,9 @@ class Service:
                 with closing(ai.store(self.path)) as c:
                     c.execute('BEGIN IMMEDIATE')
                     changed=c.execute("UPDATE auto_items SET state='skipped',error=?,updated_at=? WHERE id=? AND state IN ('pending','responded')",(reason,db.now(),item['id'])).rowcount
-                    if changed:c.execute('UPDATE auto_jobs SET skipped=skipped+1,processed=processed+1 WHERE id=?',(identifier,))
+                    if changed and config.get('retry_mode')=='in_place_failed_retry':
+                        c.execute('UPDATE auto_jobs SET failures=max(0,failures-1),skipped=skipped+1 WHERE id=?',(identifier,))
+                    elif changed:c.execute('UPDATE auto_jobs SET skipped=skipped+1,processed=processed+1 WHERE id=?',(identifier,))
                     c.commit()
                 return None
         recovered=item['state']=='responded';key=''
@@ -475,10 +490,12 @@ class Service:
             value=dict(job);value['config']=json.loads(value.pop('config_json'))
             value['usage']=json.loads(value.pop('usage_totals_json'))
             value['execution']=self.capacity(value['config'])
+            retrying_clause='''(i.state='error' OR (i.state IN ('pending','calling','responded','received')
+                AND EXISTS (SELECT 1 FROM auto_item_attempts a WHERE a.item_id=i.id)))'''
             resolved_clause='''NOT EXISTS (SELECT 1 FROM auto_items later
                 WHERE later.molecule_id=i.molecule_id AND later.state='done'
                   AND later.id>i.id AND later.job_id!=i.job_id)'''
-            filter_clause=(" AND i.state='error' AND "+resolved_clause) if result_state=='error' else ''
+            filter_clause=(" AND "+retrying_clause+" AND "+resolved_clause) if result_state=='error' else ''
             items=c.execute('''SELECT i.*,
                     later_job.id AS resolved_job_id,later_job.name AS resolved_job_name,
                     later_job.updated_at AS resolved_at
@@ -490,11 +507,12 @@ class Service:
                     ORDER BY later.id DESC LIMIT 1)
                 WHERE i.job_id=?'''+filter_clause+' ORDER BY i.id DESC LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
             resolved_count=c.execute('''SELECT count(*) FROM auto_items i
-                WHERE i.job_id=? AND i.state='error' AND EXISTS (
+                WHERE i.job_id=? AND '''+retrying_clause+''' AND EXISTS (
                     SELECT 1 FROM auto_items later WHERE later.molecule_id=i.molecule_id
                       AND later.state='done' AND later.id>i.id AND later.job_id!=i.job_id)''',(job['id'],)).fetchone()[0]
-            raw_failures=c.execute("SELECT count(*) FROM auto_items WHERE job_id=? AND state='error'",(job['id'],)).fetchone()[0]
-            value['counts']={'done':job['success'],'error':max(0,raw_failures-resolved_count),'resolved':resolved_count}
+            raw_failures=c.execute('''SELECT count(*) FROM auto_items i WHERE i.job_id=? AND '''+retrying_clause,(job['id'],)).fetchone()[0]
+            successful_items=c.execute("SELECT count(*) FROM auto_items WHERE job_id=? AND state='done'",(job['id'],)).fetchone()[0]
+            value['counts']={'done':successful_items,'error':max(0,raw_failures-resolved_count),'resolved':resolved_count}
             value['counts']['skipped']=c.execute("SELECT count(*) FROM auto_items WHERE job_id=? AND state='skipped'",(job['id'],)).fetchone()[0]
             if job['scope']=='equivalence_repair':
                 value['counts']['skipped']=job['skipped']
@@ -555,8 +573,17 @@ class Service:
             WHERE i.molecule_id=? AND i.state='done' AND i.id>? AND i.job_id!=?
             ORDER BY i.id DESC LIMIT 1''',(source['molecule_id'],source['id'],source['job_id'])).fetchone()
 
+    @staticmethod
+    def _archive_failed_attempt(c,row):
+        attempt_no=c.execute('SELECT coalesce(max(attempt_no),0)+1 FROM auto_item_attempts WHERE item_id=?',(row['id'],)).fetchone()[0]
+        c.execute('''INSERT INTO auto_item_attempts(item_id,attempt_no,state,error,usage_json,diagnostics_json,
+                elapsed,request_config_json,raw_response_json,output_json,publication_json,archived_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (row['id'],attempt_no,row['state'],row['error'],row['usage_json'],row['diagnostics_json'],row['elapsed'],
+             row['request_config_json'],row['raw_response_json'],row['output_json'],row['publication_json'],db.now()))
+
     def retry_failed(self,identifier,item_id=None,mode='failed'):
-        """New finite retry job; successful source items and the continuous cursor stay intact."""
+        """Retry failed items in place; specialized partial reruns remain separate jobs."""
         if item_id is not None and (type(item_id) is not int or item_id<1):raise ValueError('失败项目编号无效')
         if mode not in ('failed','local','issues','uncertain'):raise ValueError('恢复模式无效')
         if mode in ('issues','uncertain') and item_id is None:raise ValueError('请选择需要局部重试的分子')
@@ -574,7 +601,50 @@ class Service:
                     sql+=" AND NOT EXISTS (SELECT 1 FROM auto_items later WHERE later.molecule_id=auto_items.molecule_id AND later.state='done' AND later.id>auto_items.id AND later.job_id!=auto_items.job_id)"
                 rows=c.execute(sql+(' AND id=?' if item_id is not None else '')+' ORDER BY id',
                                (identifier,item_id) if item_id is not None else (identifier,)).fetchall()
-                if not rows:raise ValueError('没有尚未解决的失败项；已在后续任务完成标注的分子不需要重试')
+                if not rows:
+                    if mode=='failed':return {'job_id':identifier,'selected':0,'skipped':0,'mode':mode,'retry_in_place':True}
+                    raise ValueError('没有符合条件的失败项')
+                if mode=='failed':
+                    skip_reasons={r['id']:self._retry_skip_reason(r,current_job=identifier) for r in rows}
+                    selected_rows=[r for r in rows if not skip_reasons[r['id']]]
+                    skipped=len(rows)-len(selected_rows)
+                    if selected_rows:self.manager.key()
+                    retry_config=config
+                    repair_policy=json.loads(original['config_json']).get('repair_policy')
+                    if repair_policy:
+                        from . import equivalence_repair
+                        retry_config=equivalence_repair.config(retry_config)
+                    retry_config=dict(retry_config,retry_of=identifier,retry_mode='in_place_failed_retry')
+                    task_config=json.loads(original['config_json'])
+                    if repair_policy:
+                        learned_cap=task_config.get('provider_parallelism_cap') if task_config.get('provider_limit_note') else None
+                        if type(learned_cap) is int and learned_cap>0:
+                            retry_config['provider_parallelism_cap']=min(retry_config['provider_parallelism_cap'],learned_cap)
+                        task_config['provider_parallelism_cap']=retry_config['provider_parallelism_cap']
+                    now=db.now();c.execute('BEGIN IMMEDIATE')
+                    for r in rows:
+                        self._archive_failed_attempt(c,r)
+                        reason=skip_reasons[r['id']]
+                        if reason:
+                            c.execute("UPDATE auto_items SET state='skipped',error=?,updated_at=? WHERE id=? AND state='error'",
+                                      (reason,now,r['id']))
+                            c.execute('UPDATE auto_jobs SET failures=max(0,failures-1),skipped=skipped+1,updated_at=? WHERE id=?',(now,identifier))
+                            continue
+                        c.execute('''UPDATE auto_items SET state='pending',output_json=NULL,usage_json=NULL,error=NULL,
+                            diagnostics_json=NULL,publication_json=NULL,credential_id=NULL,elapsed=NULL,
+                            request_config_json=?,raw_response_json=NULL,updated_at=? WHERE id=? AND state='error' ''',
+                            (db.dumps(dict(retry_config,retry_source_item_id=r['id'])),now,r['id']))
+                    if selected_rows:
+                        c.execute("UPDATE auto_jobs SET state='running',error=NULL,config_json=?,updated_at=? WHERE id=?",
+                                  (db.dumps(task_config),now,identifier))
+                    c.commit()
+                    if selected_rows:self.manager.active=identifier;self.manager.cancel.clear()
+                    result={'job_id':identifier,'selected':len(selected_rows),'skipped':skipped,'mode':mode,'retry_in_place':True}
+                    if not selected_rows:return result
+                    # Submit after leaving the database transaction but while holding
+                    # the manager lock so no second task can claim the worker.
+                    self.manager.pool.submit(self.work,identifier)
+                    return result
                 if mode=='local':
                     rows=[r for r in rows if r['raw_response_json'] and json.loads(r['raw_response_json'])['diagnostics'].get('finish_reason')=='stop']
                     if not rows:raise ValueError('没有已完整保存的原始响应；旧失败项无法凭空恢复，截断结果仍需重新请求')
@@ -622,12 +692,19 @@ class Service:
         with closing(ai.store(self.path)) as c:
             row=c.execute('SELECT * FROM auto_items WHERE id=?',(int(identifier),)).fetchone()
             resolved=self._later_success(c,row) if row and row['state']=='error' else None
+            attempts=c.execute('''SELECT attempt_no,state,error,usage_json,diagnostics_json,elapsed,
+                request_config_json,archived_at FROM auto_item_attempts WHERE item_id=? ORDER BY attempt_no''',
+                (int(identifier),)).fetchall() if row else []
         if not row:raise KeyError(identifier)
         item=dict(row)
         for key in ('input','reference','output','usage','diagnostics','publication','request_config','raw_response'):
             item[key]=json.loads(item.pop(key+'_json') or ('[]' if key=='reference' else 'null'))
         item['resolved_by']=({'job_id':resolved['job_id'],'name':resolved['name'] or ('任务 '+resolved['job_id'][:8]),'completed_at':resolved['updated_at']} if resolved else None)
         if resolved:item['state']='resolved'
+        item['retry_history']=[{'attempt_no':r['attempt_no'],'state':r['state'],'error':r['error'],
+            'usage':json.loads(r['usage_json'] or '{}'),'diagnostics':json.loads(r['diagnostics_json'] or '{}'),
+            'elapsed':r['elapsed'],'request_config':json.loads(r['request_config_json'] or '{}'),
+            'archived_at':r['archived_at']} for r in attempts]
         return item
 
     def analyze(self,identifier):
