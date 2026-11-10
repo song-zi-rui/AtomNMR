@@ -117,7 +117,7 @@ class Service:
         if not isinstance(cfg['model'],str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,120}',cfg['model']):raise ValueError('模型 ID 无效')
         if cfg['api_adapter'] not in ai.API_ADAPTERS:raise ValueError('参数适配无效')
         if type(cfg['max_tokens']) is not int or not 1024<=cfg['max_tokens']<=65536:raise ValueError('输出上限应为1024–65536')
-        if type(cfg['timeout']) is not int or not 30<=cfg['timeout']<=600:raise ValueError('超时应为30–600秒')
+        if type(cfg['timeout']) is not int or not 30<=cfg['timeout']<=3600:raise ValueError('超时应为30–3600秒')
         if any(type(cfg[k]) is not bool for k in ('thinking','json_mode','stream')):raise ValueError('思考/JSON/流式开关无效')
         if cfg['reasoning_effort'] not in ('low','high','auto') or cfg['wire_format'] not in (*protocol.SUPPORTED_VERSIONS,'verbose-v1'):raise ValueError('思考强度/协议无效')
         cfg.update(ai.api_tls.validate_config(cfg))

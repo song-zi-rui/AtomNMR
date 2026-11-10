@@ -13,7 +13,7 @@
 <label class="check"><input id="thinking" type="checkbox" checked>启用思考模式</label>
 <label>思考强度<select id="effort"><option value="high">high · 充分推理</option><option value="low">low · 节省推理</option><option value="auto">自动按记录复杂度选择</option></select></label>
 <label>传输协议<select id="wireFormat"><option value="compact-v3">对象归属 v3 · 严格结构约束</option><option value="compact-v2">紧凑表格 v2</option><option value="verbose-v1">原始 JSON v1</option></select></label><p class="hint">测试批次始终盲标，适合对比协议和思考强度。</p>
-<div class="two"><label>最大输出 token<input id="maxTokens" type="number" min="1024" max="65536" step="1024" value="32768"></label><label>超时（秒）<input id="timeout" type="number" min="30" max="600" value="600"></label></div>
+<div class="two"><label>最大输出 token<input id="maxTokens" type="number" min="1024" max="65536" step="1024" value="32768"></label><label>超时（秒）<input id="timeout" type="number" min="30" max="3600" value="600"></label></div>
 <p class="hint">思考模式会同时消耗思考与结果 token。建议先设 32768；确认仍达到上限时可升至 65536。提高上限不代表每次都会用完。</p>
 <div class="actions"><button id="saveSettings">保存设置</button><button id="testConnection">测试连接</button><button id="clearKey" class="small">清除已保存密钥</button></div><p id="connectionResult" class="hint" aria-live="polite">测试连接只读取可用模型，不发起谱图分析。</p>
 </section>

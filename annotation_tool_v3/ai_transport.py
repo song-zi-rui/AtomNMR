@@ -200,6 +200,37 @@ def stream_wire_limit(max_tokens=None):
     return max(64*1024*1024,min(256*1024*1024,tokens*2048))
 
 
+def token_time_curve(stream,usage):
+    """Estimate time-distributed output tokens from stream text, anchored to final API usage."""
+    timeline=stream.get('timeline') if isinstance(stream,dict) else None
+    if not isinstance(timeline,list):return None
+    completion=usage.get('completion_tokens') if isinstance(usage,dict) else None
+    prompt=usage.get('prompt_tokens') if isinstance(usage,dict) else None
+    details=usage.get('completion_tokens_details') if isinstance(usage,dict) else None
+    reasoning=details.get('reasoning_tokens') if isinstance(details,dict) else None
+    answer=completion-reasoning if isinstance(completion,int) and isinstance(reasoning,int) else None
+    max_reasoning=max((p.get('reasoning_characters',0) for p in timeline),default=0)
+    max_content=max((p.get('content_characters',0) for p in timeline),default=0)
+    max_chars=max_reasoning+max_content
+    points=[]
+    for p in timeline:
+        rc=max(0,p.get('reasoning_characters',0));ac=max(0,p.get('content_characters',0))
+        row={'elapsed_ms':p.get('elapsed_ms'),'reasoning_characters':rc,'content_characters':ac,
+             'reasoning_tokens_estimate':None,'answer_tokens_estimate':None,'completion_tokens_estimate':None}
+        if isinstance(reasoning,int) and isinstance(answer,int):
+            row['reasoning_tokens_estimate']=round(reasoning*min(1,rc/max_reasoning)) if max_reasoning else 0
+            row['answer_tokens_estimate']=round(answer*min(1,ac/max_content)) if max_content else 0
+            row['completion_tokens_estimate']=row['reasoning_tokens_estimate']+row['answer_tokens_estimate']
+        elif isinstance(completion,int):
+            row['completion_tokens_estimate']=round(completion*min(1,(rc+ac)/max_chars)) if max_chars else 0
+        points.append(row)
+    return {'method':'characters_normalized_to_final_api_usage','exact_final_usage':isinstance(completion,int),
+            'prompt_tokens':prompt if isinstance(prompt,int) else None,'completion_tokens':completion if isinstance(completion,int) else None,
+            'reasoning_tokens':reasoning if isinstance(reasoning,int) else None,'answer_tokens':answer if isinstance(answer,int) else None,
+            'points':points,
+            'note':'中间时点按各通道累计字符比例估算并归一到接口最终usage；末端token总数以接口usage为准，过程点不是逐token精确计数。'}
+
+
 def read_sse(response, *, started, timeout, max_tokens=None):
     content = []
     usage = {}
@@ -208,7 +239,7 @@ def read_sse(response, *, started, timeout, max_tokens=None):
             'event_limit_bytes':STREAM_EVENT_LIMIT,'answer_limit_characters':STREAM_ANSWER_LIMIT,
             'http_status':getattr(response,'status',None) or 200,'first_content_ms':None,
             'last_event_elapsed_ms':None,'last_content_elapsed_ms':None,'last_reasoning_elapsed_ms':None,
-            'keep_alive_comments':0}
+            'keep_alive_comments':0,'timeline_sample_interval_ms':1000,'timeline':[]}
     result = {'choices': [], 'usage': usage}
     finish = None
     done = False
@@ -218,8 +249,18 @@ def read_sse(response, *, started, timeout, max_tokens=None):
     answer_tail = ''
     repeat_checked_at = 0
     pending_bytes = 0
+    last_timeline_ms=-1000
+
+    def sample(force=False):
+        nonlocal last_timeline_ms
+        elapsed_ms=max(0,int((time.perf_counter()-started)*1000))
+        if force or elapsed_ms-last_timeline_ms>=meta['timeline_sample_interval_ms']:
+            meta['timeline'].append({'elapsed_ms':elapsed_ms,'reasoning_characters':meta['reasoning_characters'],
+                                     'content_characters':meta['content_characters'],'events':meta['chunks']})
+            last_timeline_ms=elapsed_ms
 
     def oversized(kind,limit):
+        sample(True)
         report(True)
         names={'stream_wire_limit':'累计传输量','stream_event_limit':'单个数据事件','stream_answer_limit':'最终答案字符数'}
         error=APIRequestError('流式'+names[kind]+'超过本地保护上限（'+str(limit)+'）；停止接收并暂停派发，已发其他请求继续收尾。',
@@ -232,7 +273,9 @@ def read_sse(response, *, started, timeout, max_tokens=None):
         nonlocal last_report
         now = time.perf_counter()
         if force or now - last_report >= .75:
-            notify_progress(phase='streaming' if meta['ttft_ms'] is not None else 'waiting_first_token', **meta)
+            progress={k:v for k,v in meta.items() if k!='timeline'}
+            progress['timeline_points']=len(meta['timeline'])
+            notify_progress(phase='streaming' if meta['ttft_ms'] is not None else 'waiting_first_token', **progress)
             last_report = now
 
     def event():
@@ -293,14 +336,17 @@ def read_sse(response, *, started, timeout, max_tokens=None):
                 error.diagnostics.update(error_kind='repetitive_output',transport_error=False,
                                          repeated_period_characters=period,stream_transport=dict(meta))
                 raise error
+        sample()
         report()
 
+    sample(True)
     report(True)
     while not done:
         control=current_request_control()
         if control:control.check()
         elapsed=time.perf_counter()-started
         if elapsed > timeout:
+            sample(True)
             report(True)
             stage=('answer_generation' if meta['content_characters'] else
                    'reasoning' if meta['reasoning_characters'] else 'waiting_first_token')
@@ -313,6 +359,7 @@ def read_sse(response, *, started, timeout, max_tokens=None):
         try:line = response.readline(STREAM_EVENT_LIMIT + 1)
         except (OSError,HTTPException) as exc:
             if control:control.check()
+            sample(True)
             if finish is not None:
                 # A provider finish event establishes completion even if the
                 # optional usage/[DONE] trailer is lost. Decode still validates
@@ -346,7 +393,9 @@ def read_sse(response, *, started, timeout, max_tokens=None):
         elif text.lstrip().lower().startswith(('<!doctype html', '<html')):
             raise APIRequestError('API地址返回了网页；请核对Base URL的API路径。')
     if finish is None:
+        sample(True)
         raise APIRequestError('流式连接结束，但未收到完整结束标记；已暂停批次，不自动重复请求。', uncertain=True, usage=usage)
+    sample(True)
     report(True)
     meta['done_marker_received']=done
     result.update(choices=[{'index': 0, 'finish_reason': finish, 'message': {'role': 'assistant', 'content': ''.join(content)}}],

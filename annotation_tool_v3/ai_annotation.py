@@ -27,7 +27,7 @@ from . import api_tls
 from .ai_json_recovery import close_missing_root_object
 from .ai_consistency import review_issues
 from .ai_cancellation import APIRequestCancelled,RequestControl,capture_request_control,current_request_control,ControlledHTTPHandler,ControlledHTTPSHandler
-from .ai_transport import APIRequestError,capture_progress,notify_progress,read_sse,should_pause_batch,network_error,http_error,repetitive_output_period
+from .ai_transport import APIRequestError,capture_progress,notify_progress,read_sse,should_pause_batch,network_error,http_error,repetitive_output_period,token_time_curve
 
 POLICY = 'blind-paired-nmr-v1'
 API_ADAPTERS=('deepseek','deepseek-local','qwen-vllm','qwen-dashscope','openai-compatible')
@@ -447,6 +447,8 @@ def complete(key, config, context):
                        response_schema_sha256=hashlib.sha256(db.dumps(schema).encode()).hexdigest() if schema is not None else None,
                        timing={'encode_ms':(prepared-started)*1000,'api_wall_ms':(received-prepared)*1000,
                                'ttft_ms':(response.get('_transport') or {}).get('ttft_ms')})
+    if response.get('_transport'):
+        diagnostics['token_curve']=token_time_curve(response['_transport'],usage)
     content=choices[0].get('message',{}).get('content') if choices else None
     if adapter.startswith('qwen') and isinstance(content,str) and content.lstrip().startswith('<think>'):
         end=content.find('</think>')
@@ -691,8 +693,8 @@ class Manager:
             raise ValueError('模型名格式无效')
         if type(config['thinking']) is not bool or type(config['max_tokens']) is not int or not 1024 <= config['max_tokens'] <= 65536:
             raise ValueError('思考开关无效，最大输出 token 应在 1024–65536 之间')
-        if type(config['timeout']) is not int or not 30 <= config['timeout'] <= 600:
-            raise ValueError('超时应在 30–600 秒之间')
+        if type(config['timeout']) is not int or not 30 <= config['timeout'] <= 3600:
+            raise ValueError('超时应在 30–3600 秒之间')
         if config['reasoning_effort'] not in ('low','high','auto'):raise ValueError('思考强度应为 low/high/auto')
         if config['wire_format'] not in ('verbose-v1',*protocol.SUPPORTED_VERSIONS):raise ValueError('传输格式无效')
         if config['assignment_mode'] not in ('blind','assisted'):raise ValueError('归属模式无效')

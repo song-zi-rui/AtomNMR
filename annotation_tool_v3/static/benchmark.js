@@ -91,5 +91,30 @@ $('historyRows').onclick=async e=>{try{
  }
  b=e.target.closest('[data-pair]');if(b){if(!state.run)throw Error('请先打开一个作为当前轮的测试');state.chosen=new Set([state.run,b.dataset.pair]);await history();await compare();}
 }catch(e){notice(e.message);}};
-$('caseRows').onclick=async e=>{const b=e.target.closest('[data-case]');if(!b)return;try{const r=await api('/api/benchmark/cases/'+b.dataset.case);$('caseDetail').hidden=false;$('caseTitle').textContent=r.formula+' · 逐峰盲标对照';$('caseStructure').src='/api/molecule/'+r.molecule_id+'/svg';$('caseSummary').textContent=(r.output?.summary||errorDescription(r))+consistencyNote(r);const atoms=a=>(a||[]).map(i=>(r.input.atoms[i]?.element||'?')+i).join(', ')||'—',pred=new Map((r.output?.assignments||[]).map(p=>[p.spectrum_id+'|'+p.peak_id,p]));$('predictionRows').innerHTML=r.comparisons.filter(x=>x.kind==='peak').map(x=>{const p=pred.get(x.spectrum_id+'|'+x.peak_id);return `<tr><td>${esc(x.nucleus)} · ${esc(x.peak_id)}</td><td>${esc(p?.status||'未返回')}<br>${esc(atoms(p?.atom_indices))}${p?.candidates?.length?'<br>候选 '+esc(p.candidates.map(atoms).join(' / ')):''}</td><td>${esc(atoms(x.atom_indices))}</td><td>${x.eligible?(x.correct?'✓ 一致':x.attempted?'× 不一致':'未确定，计入分母'):'不计逐峰分母'}</td><td>${esc(p?.brief_reason||'')}</td></tr>`;}).join('');$('caseJSON').textContent=JSON.stringify(r,null,2);$('caseDetail').scrollIntoView({behavior:'smooth'});}catch(e){notice(e.message);}};
+function drawTokenCurve(attempts){
+ const attempt=[...(attempts||[])].reverse().find(a=>a.diagnostics?.token_curve?.points?.length||a.diagnostics?.stream_transport?.timeline?.length||a.diagnostics?.progress?.stream?.timeline?.length);
+ const panel=$('tokenCurvePanel'),svg=$('tokenCurve');svg.innerHTML='';panel.hidden=!attempt;if(!attempt)return;
+ const d=attempt.diagnostics||{},curve=d.token_curve,stream=d.stream_transport||d.progress?.stream||{},points=curve?.points?.length?curve.points:stream.timeline||[];
+ if(!points.length){panel.hidden=true;return;}
+ const tokenMode=!!curve?.points?.length,W=900,H=320,L=70,R=22,T=20,B=48,innerW=W-L-R,innerH=H-T-B;
+ const last=points[points.length-1],xMax=Math.max(1,(last.elapsed_ms||0)/1000);
+ const series=tokenMode&&curve.reasoning_tokens!=null&&curve.answer_tokens!=null?[
+  {label:'思考 token（按字符比例估算）',key:'reasoning_tokens_estimate',color:'#d28726'},
+  {label:'最终答案 token（按字符比例估算）',key:'answer_tokens_estimate',color:'#477fb5'},
+  {label:'累计输出 token（估算）',key:'completion_tokens_estimate',color:'#278269'}
+ ]:tokenMode?[{label:'累计输出 token（按字符比例估算）',key:'completion_tokens_estimate',color:'#278269'}]:[
+  {label:'思考字符',key:'reasoning_characters',color:'#d28726'},
+  {label:'最终答案字符',key:'content_characters',color:'#477fb5'}
+ ];
+ const ys=series.flatMap(s=>points.map(p=>Number(p[s.key]||0))),yMax=Math.max(1,...ys),yCeil=Math.ceil(yMax/4),yTop=yCeil*4;
+ const x=x=>L+(Math.max(0,Math.min(xMax,x))/xMax)*innerW,y=v=>T+innerH-(Math.max(0,v)/yTop)*innerH;
+ const parts=[];for(let i=0;i<=4;i++){const v=yTop*i/4,yy=y(v);parts.push(`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#e7eeea"/><text x="${L-10}" y="${yy+4}" text-anchor="end" fill="#73877e" font-size="11">${fmt(Math.round(v))}</text>`);}
+ for(let i=0;i<=4;i++){const val=xMax*i/4,xx=x(val),label=val<60?Math.round(val)+'s':Math.round(val/60)+'m';parts.push(`<line x1="${xx}" y1="${T}" x2="${xx}" y2="${T+innerH}" stroke="#f0f3f1"/><text x="${xx}" y="${H-17}" text-anchor="middle" fill="#73877e" font-size="11">${label}</text>`);}
+ parts.push(`<line x1="${L}" y1="${T}" x2="${L}" y2="${T+innerH}" stroke="#9aada4"/><line x1="${L}" y1="${T+innerH}" x2="${W-R}" y2="${T+innerH}" stroke="#9aada4"/>`);
+ for(const s of series){const path=points.map((p,i)=>`${i?'L':'M'}${x((p.elapsed_ms||0)/1000).toFixed(1)},${y(Number(p[s.key]||0)).toFixed(1)}`).join(' ');parts.push(`<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>`);}
+ svg.innerHTML=parts.join('');$('tokenCurveUsage').textContent=curve?.exact_final_usage?`接口最终用量：输入 ${fmt(curve.prompt_tokens)} · 输出 ${fmt(curve.completion_tokens)}${curve.reasoning_tokens!=null?'（思考 '+fmt(curve.reasoning_tokens)+'）':''} token`:'接口未返回最终 token 用量';
+ $('tokenCurveNote').textContent=tokenMode?'曲线中间点按各通道字符数比例估算，并归一到接口最终 token 用量；末端总数准确，中间点不是逐 token 计数。':`接口未返回 token 用量，暂以流中实际收到的字符数绘图。末点：思考 ${fmt(last.reasoning_characters||0)} 字符，答案 ${fmt(last.content_characters||0)} 字符。`;
+ const legend=document.createElement('div');legend.className='curve-legend';legend.innerHTML=series.map(s=>`<span style="--swatch:${s.color}">${esc(s.label)}</span>`).join('');panel.querySelector('.curve-legend')?.remove();svg.after(legend);
+}
+$('caseRows').onclick=async e=>{const b=e.target.closest('[data-case]');if(!b)return;try{const r=await api('/api/benchmark/cases/'+b.dataset.case);$('caseDetail').hidden=false;$('caseTitle').textContent=r.formula+' · 逐峰盲标对照';$('caseStructure').src='/api/molecule/'+r.molecule_id+'/svg';$('caseSummary').textContent=(r.output?.summary||errorDescription(r))+consistencyNote(r);drawTokenCurve(r.attempts||[]);const atoms=a=>(a||[]).map(i=>(r.input.atoms[i]?.element||'?')+i).join(', ')||'—',pred=new Map((r.output?.assignments||[]).map(p=>[p.spectrum_id+'|'+p.peak_id,p]));$('predictionRows').innerHTML=r.comparisons.filter(x=>x.kind==='peak').map(x=>{const p=pred.get(x.spectrum_id+'|'+x.peak_id);return `<tr><td>${esc(x.nucleus)} · ${esc(x.peak_id)}</td><td>${esc(p?.status||'未返回')}<br>${esc(atoms(p?.atom_indices))}${p?.candidates?.length?'<br>候选 '+esc(p.candidates.map(atoms).join(' / ')):''}</td><td>${esc(atoms(x.atom_indices))}</td><td>${x.eligible?(x.correct?'✓ 一致':x.attempted?'× 不一致':'未确定，计入分母'):'不计逐峰分母'}</td><td>${esc(p?.brief_reason||'')}</td></tr>`;}).join('');$('caseJSON').textContent=JSON.stringify(r,null,2);$('caseDetail').scrollIntoView({behavior:'smooth'});}catch(e){notice(e.message);}};
 Promise.all([loadProfiles(),loadSets(),history()]).then(async()=>{setRunDefaults();setSecondDefaults();await showSet();await refresh();}).catch(e=>notice(e.message));
