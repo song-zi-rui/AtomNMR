@@ -61,6 +61,8 @@ def initialize(c):
     if 'name' not in columns:
         c.execute("ALTER TABLE auto_jobs ADD COLUMN name TEXT NOT NULL DEFAULT ''")
     c.execute('CREATE INDEX IF NOT EXISTS auto_item_molecule_state ON auto_items(molecule_id,state,id)')
+    c.execute("""CREATE INDEX IF NOT EXISTS auto_item_applied_recent ON auto_items(job_id,updated_at DESC,id DESC)
+        WHERE state='done' AND json_extract(publication_json,'$.applied')>0""")
     for row in c.execute("SELECT id,config_json FROM auto_jobs WHERE scope='pending' AND state!='completed'").fetchall():
         config=json.loads(row['config_json'])
         if config.get('queue_order_policy')!='unlabeled_first_v1':
@@ -87,6 +89,8 @@ class Service:
     def __init__(self,manager):
         self.manager=manager;self.path=manager.path;self.main_path=manager.main_path
         self.duration_lock=threading.Lock();self.duration_cache={}
+        self.unattended_cooldown=0
+        self.cooldown=None
         with closing(ai.store(self.path)) as c:initialize(c)
 
     def capacity(self,config,now=None):
@@ -350,7 +354,7 @@ class Service:
         else:
             execution=self.capacity(config)
             if not execution['dispatch_allowed']:return None # Leave pending; no API, no failure count.
-            key=self.manager.key();credential=self.manager.credential
+            key=self.manager.key(config);credential=self.manager.credential
             if self.manager.cancel.is_set():return None
             config=dict(config,execution_at_dispatch=execution,dispatched_at=db.now())
             with closing(ai.store(self.path)) as c:
@@ -411,7 +415,7 @@ class Service:
 
     def work(self,identifier):
         final,error,streak='paused',None,0
-        inflight={};exhausted=False;halt=False
+        inflight={};exhausted=False;halt=False;cooldown_until=0.0
         pool=ThreadPoolExecutor(max_workers=ai_parallel.MAX_WORKERS,thread_name_prefix='nmr-molecule')
         try:
             with closing(ai.store(self.path)) as c:
@@ -421,7 +425,7 @@ class Service:
                 with closing(ai.store(self.path)) as c:
                     config=json.loads(c.execute('SELECT config_json FROM auto_jobs WHERE id=?',(identifier,)).fetchone()[0])
                 limit=self.capacity(config)['effective_parallelism']
-                while not halt and not self.manager.cancel.is_set():
+                while not halt and not self.manager.cancel.is_set() and time.monotonic()>=cooldown_until:
                     with closing(ai.store(self.path)) as c:
                         job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
                         excluded=tuple(inflight.values())
@@ -444,6 +448,10 @@ class Service:
                     if item['state']=='pending' and not self.capacity(config)['dispatch_allowed']:break
                     inflight[pool.submit(self._execute,item,config)]=item['id']
                 if not inflight:
+                    remaining=cooldown_until-time.monotonic()
+                    if remaining>0 and not halt and not self.manager.cancel.is_set():
+                        self.manager.cancel.wait(remaining)
+                        continue
                     if limit==0 and not exhausted and not halt and not self.manager.cancel.is_set():
                         # Keep the job alive across peak hours, with no paid calls
                         # and no cursor advancement. Cancellation remains immediate.
@@ -467,7 +475,10 @@ class Service:
                             pass
                         else:
                             streak+=1
-                            if streak>=3 or ai.should_pause_batch(exc):
+                            if not halt and streak<3 and self.unattended_cooldown and job['scope']=='unlabeled' and self.transient_failure(exc):
+                                cooldown_until=time.monotonic()+self.unattended_cooldown
+                                self.cooldown=(identifier,cooldown_until)
+                            elif streak>=3 or ai.should_pause_batch(exc):
                                 halt=True;final='attention';error=item['error']
                     except Exception as exc:
                         halt=True;final='attention';error=str(exc)[:1500]
@@ -476,12 +487,19 @@ class Service:
         except Exception as exc:final,error='attention',str(exc)[:1500]
         finally:
             pool.shutdown(wait=True)
+            self.cooldown=None
             with closing(ai.store(self.path)) as c:
                 c.execute('UPDATE auto_jobs SET state=?,error=?,updated_at=? WHERE id=?',(final,error,db.now(),identifier));c.commit()
             with self.manager.lock:self.manager.active=None
 
+    @staticmethod
+    def transient_failure(exc):
+        diagnostics=getattr(exc,'diagnostics',{}) or {}
+        return (diagnostics.get('http_status') in (502,503,504,524) or
+                diagnostics.get('error_kind') in ('timeout','total_timeout','connection_reset','remote_disconnected','incomplete_read'))
+
     def status(self,identifier=None,result_state=None):
-        if result_state not in (None,'','error'):raise ValueError('结果筛选无效')
+        if result_state not in (None,'','error','applied'):raise ValueError('结果筛选无效')
         identifier=identifier or self.manager.active
         with closing(ai.store(self.path)) as c:
             jobs=[dict(r) for r in c.execute('SELECT * FROM auto_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 30')]
@@ -490,12 +508,18 @@ class Service:
             value=dict(job);value['config']=json.loads(value.pop('config_json'))
             value['usage']=json.loads(value.pop('usage_totals_json'))
             value['execution']=self.capacity(value['config'])
+            cooldown=self.cooldown
+            value['cooldown_s']=max(0,int(cooldown[1]-time.monotonic()+.999)) if cooldown and cooldown[0]==job['id'] else 0
             retrying_clause='''(i.state='error' OR (i.state IN ('pending','calling','responded','received')
                 AND EXISTS (SELECT 1 FROM auto_item_attempts a WHERE a.item_id=i.id)))'''
             resolved_clause='''NOT EXISTS (SELECT 1 FROM auto_items later
                 WHERE later.molecule_id=i.molecule_id AND later.state='done'
                   AND later.id>i.id AND later.job_id!=i.job_id)'''
             filter_clause=(" AND "+retrying_clause+" AND "+resolved_clause) if result_state=='error' else ''
+            order='i.id DESC'
+            if result_state=='applied':
+                filter_clause=" AND i.state='done' AND json_extract(i.publication_json,'$.applied')>0"
+                order='i.updated_at DESC,i.id DESC'
             items=c.execute('''SELECT i.*,
                     later_job.id AS resolved_job_id,later_job.name AS resolved_job_name,
                     later_job.updated_at AS resolved_at
@@ -505,7 +529,7 @@ class Service:
                     WHERE later.molecule_id=i.molecule_id AND later.state='done'
                       AND later.id>i.id AND later.job_id!=i.job_id
                     ORDER BY later.id DESC LIMIT 1)
-                WHERE i.job_id=?'''+filter_clause+' ORDER BY i.id DESC LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
+                WHERE i.job_id=?'''+filter_clause+' ORDER BY '+order+' LIMIT '+('100' if result_state=='error' else '30'),(job['id'],)).fetchall()
             resolved_count=c.execute('''SELECT count(*) FROM auto_items i
                 WHERE i.job_id=? AND '''+retrying_clause+''' AND EXISTS (
                     SELECT 1 FROM auto_items later WHERE later.molecule_id=i.molecule_id

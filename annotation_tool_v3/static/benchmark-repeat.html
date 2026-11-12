@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>归属重复性对照 · AtomNMR</title>
+  <link rel="stylesheet" href="/ai.css">
+  <link rel="stylesheet" href="/benchmark-repeat.css">
+  <script type="module" src="/benchmark-repeat.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/">AtomNMR</a><strong>/ 归属重复性对照</strong><nav><a href="/benchmark.html">返回 AI 归属测试台</a></nav></header>
+<main class="repeat">
+  <section class="intro"><div><h1>同一个峰，四份归属</h1><p>把 ShiftDB2 参考、组内 API 和官方 API 的两次回答排在一起。按分子、核种筛选，也可以只看两次官方答案发生变化的峰。</p></div></section>
+  <form id="runForm" class="card">
+    <h2>选择三轮测试</h2>
+    <div class="repeat-runs">
+      <label>组内 API<select id="group" required></select></label>
+      <label>官方第 1 次<select id="first" required></select></label>
+      <label>官方第 2 次<select id="second" required></select></label>
+      <button class="primary" id="loadRuns" type="submit">对比归属</button>
+    </div>
+    <p id="loadStatus" class="hint" role="status" aria-live="polite">正在读取测试记录…</p>
+  </form>
+  <div id="results" hidden>
+    <section class="card">
+      <h2>本次对照</h2>
+      <p class="hint" id="controlsCheck"></p>
+      <div id="metrics" class="repeat-metrics"></div>
+      <p class="hint">符合率使用测试台的精确匹配规则，分母为有可评分 ShiftDB2 参考的峰。官方一致率比较归属状态、原子集合及有序候选；置信标签和文字依据不计入。无逐峰参考的峰可以查看，但不计入这些统计。</p>
+    </section>
+    <section class="card">
+      <h2>逐峰对照</h2>
+      <div class="repeat-filters">
+        <label>分子<select id="molecule"></select></label>
+        <label>核种<select id="nucleus"><option value="">全部</option><option value="13C">¹³C</option><option value="1H">¹H</option></select></label>
+        <label>峰范围<select id="filter"><option value="reference">有可评分参考</option><option value="changed">官方两次有变化</option><option value="primary">官方主归属或状态变化</option><option value="all">全部谱峰</option></select></label>
+        <label class="check"><input type="checkbox" id="reasons">显示简短依据</label>
+      </div>
+      <p id="rowCount" class="hint" role="status"></p>
+      <div class="repeat-table" tabindex="0" role="region" aria-label="逐峰对照表，可横向滚动">
+        <table>
+          <thead><tr><th scope="col">分子 / 峰</th><th scope="col">ShiftDB2</th><th scope="col">组内 API</th><th scope="col">官方第 1 次</th><th scope="col">官方第 2 次</th><th scope="col">官方两次</th></tr></thead>
+          <tbody id="peakRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+</body>
+</html>

@@ -16,5 +16,6 @@
     "ca_sha256": "b09dc7b6f3c4207a659466b6dce7d23775d7b4d24144f457346456dab7e2eaa7",
     "tls_origin": "https://10.8.130.88:443"
   },
-  "execution": {"parallelism": 2, "parallel_strategy": "fixed"}
+  "execution": {"parallelism": 1, "parallel_strategy": "fixed"},
+  "server": {"transient_cooldown_s": 90}
 }

@@ -6,15 +6,23 @@ from pathlib import Path
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[2]
+DEPLOY_FILES = {'package_code.py','snapshot_databases.py','api.example.json','atomnmr.env.example',
+                'atomnmr.service','atomnmr-user.service','start-user.sh','requirements.txt','GITHUB_README.md',
+                'sync-code.ps1','atomnmr-code-sync.service','atomnmr-code-sync.timer'}
+
 def collect_files(root):
     files=[]
     for folder in ['annotation_tool_v3','atompeak_data','tools','dict','deploy/server']:
         for path in (root/folder).rglob('*'):
-            if not path.is_file() or '__pycache__' in path.parts or path.suffix in ('.pyc','.pyo'):continue
-            if '.env' in path.name and path.name!='atomnmr.env.example':continue
-            if path.suffix.lower() in ('.sqlite','.db','.lmdb','.zip','.log','.key','.pem'):continue
-            if folder=='deploy/server' and path.name not in ['package_code.py','api.example.json','atomnmr.env.example','atomnmr.service','atomnmr-user.service','start-user.sh','requirements.txt','GITHUB_README.md','sync-code.ps1','atomnmr-code-sync.service','atomnmr-code-sync.timer']:continue
-            files.append(path)
+            if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):continue
+            rel=path.relative_to(root).as_posix()
+            if folder=='deploy/server':allowed=path.parent==root/folder and path.name in DEPLOY_FILES
+            elif folder=='dict':allowed=path.suffix=='.txt'
+            elif folder=='annotation_tool_v3':
+                allowed=(path.suffix in ('.py','.html','.css','.js','.ps1','.cmd') or rel in
+                         ('annotation_tool_v3/README.md','annotation_tool_v3/certificates/ai-cluster-ca.crt'))
+            else:allowed=path.suffix=='.py'
+            if allowed:files.append(path)
     files.append(root/'nmrpeak/utils/vocab_rules.py')
     doc=root/'docs/组内服务器部署与持续标注_20261030.md'
     if doc.exists():files.append(doc)
@@ -26,12 +34,14 @@ def collect_files(root):
     if layout_doc.exists():files.append(layout_doc)
     repair_doc=root/'docs/AI等价组重标_暂停收尾_流式修复_20261031.md'
     if repair_doc.exists():files.append(repair_doc)
+    current_doc=root/'docs/AtomNMR_组内服务器持续标注_20261112.md'
+    if current_doc.exists():files.append(current_doc)
     return files
 
 def main():
     root=Path(__file__).resolve().parents[2]
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output',type=Path,default=root/'deploy/atomnmr-server-code-20261031.zip')
+    parser.add_argument('--output',type=Path,default=root/'deploy/atomnmr-server-code-20261112.zip')
     target=parser.parse_args().output
     if target.exists():raise ValueError('Choose a new archive path; previous code packages are preserved')
     target.parent.mkdir(parents=True,exist_ok=True)

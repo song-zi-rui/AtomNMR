@@ -724,7 +724,7 @@ class Manager:
             self.refresh_credential()
         return {**self.settings(),'saved_for_next_run':draining,'inflight_request_unchanged':draining}
 
-    def key(self):
+    def key(self, config=None):
         if self.secret_error:raise ValueError(self.secret_error)
         key = self.secret or os.environ.get('DEEPSEEK_API_KEY','')
         if not key:
@@ -795,12 +795,12 @@ class Manager:
         with self.lock:
             if self.active:
                 raise RuntimeError('已有进行中的 AI 批次')
-            key = self.key()
             with closing(store(self.path)) as c:
                 row = c.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
                 if not row:
                     raise KeyError(run_id)
                 config = json.loads(row['config_json'])
+                key = self.key(config)
                 if retry_errors:
                     c.execute("UPDATE items SET state='pending',error=NULL WHERE run_id=? AND state='error'",(run_id,))
                 if not c.execute("SELECT 1 FROM items WHERE run_id=? AND state='pending'",(run_id,)).fetchone():
