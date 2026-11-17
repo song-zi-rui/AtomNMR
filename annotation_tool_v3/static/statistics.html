@@ -14,6 +14,12 @@
 <details class="panel source-details"><summary>查看当前归属标签的来源明细</summary><div class="table-scroll"><table><thead><tr><th>来源</th><th>核种</th><th>峰数</th><th>涉及分子</th></tr></thead><tbody id="annotationSources"></tbody></table></div><p class="footnote">同一分子可包含不同来源的标签，涉及分子数不应跨来源相加。</p></details>
 <p class="footnote">存档谱包含参考及历史版本；未自动隔离的谱仍可能被人工停用或排除。这些总量不等于可用于训练的数据量。</p>
 </section>
+<section aria-labelledby="literatureTitle">
+<div class="section-heading"><div><h2 id="literatureTitle">文献提取</h2><p>主库累计入库与去重结果</p></div><a href="/literature/">打开提取控制台 ↗</a></div>
+<div id="literatureCards" class="cards" aria-live="polite"><p>正在读取文献提取记录…</p></div>
+<article class="panel"><h3>按核种统计</h3><div class="table-scroll"><table><thead><tr><th>核种</th><th>新增谱</th><th>补归属的原谱</th><th>写入的归属峰</th><th>重复跳过</th><th>谱待复核</th></tr></thead><tbody id="literatureSpectra"></tbody></table></div><p id="literatureNotes" class="footnote"></p></article>
+<details class="panel source-details"><summary>查看最近提取批次</summary><div class="table-scroll"><table><thead><tr><th>批次</th><th>开始时间</th><th>状态</th><th>检查 PDF</th><th>新增谱</th><th>补归属的原谱</th><th>重复谱</th><th>谱待复核</th></tr></thead><tbody id="literatureRuns"></tbody></table></div></details>
+</section>
 <section aria-labelledby="dailyTitle" class="annotation-section">
 <div class="section-heading"><div><h2 id="dailyTitle">标注统计</h2><p>AI 与人工分别统计 · 共同使用下方日期 · 北京时间</p></div><div class="date-controls"><label>统计日期<input id="day" type="date"></label><button id="today">回到今天</button></div></div>
 <div class="annotation-grid">

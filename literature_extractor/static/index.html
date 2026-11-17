@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AtomNMR 文献提取</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="masthead"><div class="wordmark">AtomNMR</div><nav id="main-nav" hidden aria-label="AtomNMR 导航"><a href="/">标注主页</a> · <a href="/statistics.html#literatureTitle">文献提取统计</a></nav><h1>文献归属提取</h1><p id="intro">从论文提取 ¹H / ¹³C 位移和原子编号，保存为 AtomNMR SQLite。</p></header>
+    <form id="extract" class="panel intake">
+      <label for="folder">论文根目录</label>
+      <div class="folder-controls"><input id="folder" name="folder" required autocomplete="off" placeholder="每篇论文和附件放在同一个子文件夹"><button id="choose" type="button">选择文件夹</button></div>
+      <div class="queue-actions"><label for="limit">目标分子数</label><input id="limit" type="number" min="1" step="1" placeholder="不限"><button class="primary" id="start">开始提取</button><button id="resume" type="button" hidden>继续提取</button><button id="pause" type="button" hidden>暂停</button><button id="latest" type="button">查看上次任务</button></div>
+      <div id="progress" class="progress" hidden><progress></progress><span></span></div>
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </form>
+    <details class="panel workspace-tools" id="grouping">
+      <summary>按论文整理散放的 PDF</summary>
+      <p>扫描根目录中的 PDF。依据 DOI、题名或文件主名称匹配，再将原文件移动到对应子文件夹。</p>
+      <div class="tool-buttons"><button type="button" id="group-preview">预览分组</button><button type="button" id="group-apply" hidden>创建分组文件夹</button></div>
+      <p class="notice" id="group-status" role="status"></p><ul class="group-list" id="group-list"></ul>
+    </details>
+    <details class="panel workspace-tools" id="discovery">
+      <summary>检索论文</summary>
+      <form id="search-papers">
+        <div class="search-fields"><label>分子英文名 <input id="compound-name" maxlength="150" placeholder="例如 Rapamycin，选填"></label><label>每类数量 <input id="search-limit" type="number" min="1" max="20" value="8" required></label></div>
+        <div class="search-types"><label><input type="checkbox" value="synthesis" checked> 全合成</label><label><input type="checkbox" value="assignment" checked> 专门归属</label><label><input type="checkbox" value="revision" checked> 归属修订</label><label><input type="checkbox" value="isolation" checked> 分离与结构鉴定</label></div>
+        <div class="tool-buttons"><button class="primary" id="search-start">搜索</button><button type="button" id="search-export" hidden>下载检索表 CSV</button></div>
+      </form>
+      <p class="notice" id="search-status" role="status"></p>
+      <div id="search-results" class="table-shell" hidden><table><thead><tr><th>论文与链接</th><th>类别</th><th>筛选依据</th></tr></thead><tbody id="paper-rows"></tbody></table></div>
+    </details>
+    <section id="results" hidden aria-labelledby="result-title">
+      <header class="result-head"><div><h2 id="result-title">提取结果</h2><p id="counts"></p></div><div class="exports"><a id="database" class="button primary" download>下载本批 SQLite</a><a id="report" class="button" download>下载提取报告</a></div></header>
+      <p id="destination" class="destination"></p>
+      <div id="molecules" class="molecules" role="group" aria-label="归属表"></div>
+      <article id="selected" class="panel selected" hidden>
+        <header class="selection-heading"><div><h3 id="chemical"></h3><p id="reference"></p></div><div id="sources" class="sources"></div></header>
+        <ul id="problems" class="problems" hidden></ul>
+        <p id="missing" class="missing" hidden></p>
+        <div class="explore">
+          <div id="structure" class="structure" aria-label="带论文编号的分子图"></div>
+          <div class="spectra">
+            <div class="tools"><div id="nuclei" role="group" aria-label="核种"></div><input id="filter" type="search" aria-label="筛选峰表" placeholder="筛选位移或原子编号"></div>
+            <div class="table-shell"><table><thead id="peak-head"></thead><tbody id="peaks"></tbody></table></div>
+          </div>
+        </div>
+      </article>
+      <details class="panel files" id="files"><summary>文件处理记录</summary><ul id="file-list"></ul></details>
+    </section>
+  </main>
+  <dialog id="folder-picker" aria-labelledby="picker-title">
+    <h2 id="picker-title">选择论文文件夹</h2>
+    <form id="folder-navigation" class="picker-navigation">
+      <button id="folder-up" type="button" disabled>上一级</button>
+      <input id="folder-address" aria-label="文件夹路径" autocomplete="off" placeholder="输入完整路径" autofocus>
+      <button type="submit">前往</button>
+    </form>
+    <p id="folder-status" class="notice" role="status"></p>
+    <div id="folder-list" class="folder-list" aria-label="子文件夹"></div>
+    <div class="picker-actions"><button id="folder-cancel" type="button">取消</button><button class="primary" id="folder-select" type="button" disabled>使用此文件夹</button></div>
+  </dialog>
+</body>
+</html>

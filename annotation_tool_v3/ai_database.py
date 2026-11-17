@@ -115,7 +115,8 @@ def statistics(c):
     sources=[dict(r) for r in c.execute('''WITH per_spectrum AS (
                   SELECT spectrum_id,CASE WHEN origin LIKE 'ai:%' THEN 'ai'
                   WHEN origin IN ('manual','manual_v2') THEN 'manual'
-                  WHEN origin='nmrshiftdb2' THEN 'shiftdb2' ELSE 'other' END label_source,count(*) n
+                  WHEN origin='nmrshiftdb2' THEN 'shiftdb2'
+                  WHEN origin='literature_pdf' THEN 'literature' ELSE 'other' END label_source,count(*) n
                   FROM annotations WHERE status IN ('assigned','equivalent_group','overlap','source_group')
                   GROUP BY spectrum_id,label_source)
                   SELECT a.label_source source,s.nucleus,sum(a.n) peaks,count(DISTINCT s.molecule_id) molecules

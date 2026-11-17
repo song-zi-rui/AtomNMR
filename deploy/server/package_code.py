@@ -12,7 +12,7 @@ DEPLOY_FILES = {'package_code.py','snapshot_databases.py','api.example.json','at
 
 def collect_files(root):
     files=[]
-    for folder in ['annotation_tool_v3','atompeak_data','tools','dict','deploy/server']:
+    for folder in ['annotation_tool_v3','literature_extractor','atompeak_data','tools','dict','deploy/server']:
         for path in (root/folder).rglob('*'):
             if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):continue
             rel=path.relative_to(root).as_posix()
@@ -21,6 +21,9 @@ def collect_files(root):
             elif folder=='annotation_tool_v3':
                 allowed=(path.suffix in ('.py','.html','.css','.js','.ps1','.cmd') or rel in
                          ('annotation_tool_v3/README.md','annotation_tool_v3/certificates/ai-cluster-ca.crt'))
+            elif folder=='literature_extractor':
+                allowed=(path.suffix in ('.py','.html','.css','.js')
+                         or path.name in {'README.md','mauritines.json','lyngbyabellins.json'})
             else:allowed=path.suffix=='.py'
             if allowed:files.append(path)
     files.append(root/'nmrpeak/utils/vocab_rules.py')

@@ -20,7 +20,7 @@
   }
   function renderTotal(s){
     const quality=s.spectrum_quality||{},held=quality.quarantined||0,p=s.annotation_processing||{},progress=s.dual_assignment_progress||{};
-    const origins=s.annotation_origins||{sources:[],models:[]},sourceNames={shiftdb2:'ShiftDB2 原库',manual:'人工标注',ai:'AI 自动标注',other:'其他来源'};
+    const origins=s.annotation_origins||{sources:[],models:[]},sourceNames={shiftdb2:'ShiftDB2 原库',manual:'人工标注',ai:'AI 自动标注',literature:'文献归属',other:'其他来源'};
     $('annotationSources').innerHTML=origins.sources.map(r=>`<tr><td><span class="source-chip ${r.source==='ai'?'ai':r.source==='manual'?'manual':''}">${sourceNames[r.source]||text(r.source)}</span></td><td>${text(r.nucleus)}</td><td>${n(r.peaks)}</td><td>${n(r.molecules)}</td></tr>`).join('')||'<tr><td colspan="4">暂无来源统计</td></tr>';
     const manual=origins.sources.filter(r=>r.source==='manual');
     $('manualSources').innerHTML=manual.map(r=>`<tr><td>${text(r.nucleus)}</td><td>${n(r.peaks)}</td><td>${n(r.molecules)}</td></tr>`).join('')||'<tr><td colspan="3">尚无人工归属</td></tr>';
@@ -43,11 +43,29 @@
     }
     $('dualProgress').innerHTML=`<div class="progress-number">${n(progress.ready_molecules)} <small>/ ${n(progress.total_dual_molecules)} 个</small></div><progress aria-label="C/H 双谱全归属比例" max="${Math.max(1,progress.total_dual_molecules||0)}" value="${progress.ready_molecules||0}"></progress><p>${Number(progress.percent||0).toFixed(2)}% 已全归属 · 还剩 ${n(progress.remaining_molecules)} 个双谱分子</p>`;
   }
+  function renderLiterature(data){
+    const sum=status=>data.by_nucleus.filter(r=>r.status===status).reduce((total,r)=>total+r.spectra,0);
+    $('literatureCards').innerHTML=card('提取批次',data.batch_count,'次')+card('新增分子',data.new_molecules,'个')
+      +card('涉及分子',data.affected_molecules,'个')+card('新增实验谱',sum('added'),'条')
+      +card('补归属的原谱',sum('filled'),'条')+card('重复跳过',sum('duplicate'),'条');
+    $('literatureSpectra').innerHTML=[['13C','¹³C'],['1H','¹H']].map(([key,name])=>{
+      const rows=data.by_nucleus.filter(r=>r.nucleus===key);
+      const count=status=>rows.find(r=>r.status===status)?.spectra;
+      return `<tr><th scope="row">${name}</th><td>${n(count('added'))}</td><td>${n(count('filled'))}</td><td>${n(rows.reduce((total,r)=>total+r.assigned_peaks,0))}</td><td>${n(count('duplicate'))}</td><td>${n(count('review'))}</td></tr>`;
+    }).join('');
+    $('literatureNotes').textContent=`累计检查 ${n(data.pdf_count)} 份 PDF，跳过 ${n(data.skipped_folders)} 个重复或已处理目录。另有 ${n(data.review_tables)} 张无法直接入库的归属表、${n(data.review_files)} 份需要核查版式或读取情况的 PDF。写入的归属峰包含新谱归属及原谱补入的归属。`;
+    const states={running:'提取中',paused:'已暂停',complete:'已完成',error:'失败'};
+    $('literatureRuns').innerHTML=data.recent.map(r=>`<tr><td><a href="/literature/?job=${encodeURIComponent(r.id)}">${text(r.id)}</a></td><td>${r.started_at?stamp(r.started_at):'—'}</td><td>${text(states[r.state]||r.state)}${r.errors?' · '+n(r.errors)+' 个目录出错':''}</td><td>${n(r.pdf_count)}</td><td>${n(r.added)}</td><td>${n(r.filled)}</td><td>${n(r.duplicates)}</td><td>${n(r.review)}</td></tr>`).join('')||'<tr><td colspan="8">暂无提取批次</td></tr>';
+  }
   async function refresh(totals=true){
     const request=++sequence;$('refresh').disabled=true;$('updated').textContent='正在更新…';
     const params=new URLSearchParams({days:14});if($('day').value)params.set('date',$('day').value);
     const jobs=[get('/api/workload?'+params).then(data=>{if(request===sequence){lastDaily=data;renderDaily(data);}})];
-    if(totals)jobs.push(get('/api/stats').then(data=>{if(request===sequence){lastTotal=data;renderTotal(data);}}));
+    if(totals){
+      jobs.push(get('/api/stats').then(data=>{if(request===sequence){lastTotal=data;renderTotal(data);}}));
+      jobs.push(get('/api/literature/stats').then(data=>{if(request===sequence)renderLiterature(data);})
+        .catch(error=>{if(request===sequence)$('literatureCards').textContent='文献提取统计暂时无法读取，请刷新重试。';throw error;}));
+    }
     const results=await Promise.allSettled(jobs);if(request!==sequence)return;
     const error=results.find(x=>x.status==='rejected');$('updated').classList.toggle('error',!!error);
     $('updated').textContent=error?'部分统计读取失败，请刷新重试。':`更新于 ${stamp(new Date())} · 北京时间`;

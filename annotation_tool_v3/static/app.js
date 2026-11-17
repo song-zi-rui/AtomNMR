@@ -3,6 +3,7 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const labels = {complete_remaining:"部分归属",both_unassigned:"无归属",waiting_spectrum:"缺少实验谱",complete:"全归属",assigned:"唯一归属",equivalent_group:"等价组",overlap:"重叠",source_group:"原库多原子归属",ambiguous:"歧义",unassigned:"未归属",solvent:"溶剂峰",impurity:"杂质",excluded:"不计入"};
 const coverageLabels={full:'全归属',partial:'部分归属',none:'无归属'};
+const sourceLabel=source=>source==='literature_pdf'?'文献实验谱':source;
 function coverageLabel(r){const total=(r.c_count||0)+(r.h_count||0),assigned=(r.c_assigned||0)+(r.h_assigned||0);return coverageLabels[r.annotation_coverage?.status||(assigned?(assigned===total?'full':'partial'):'none')];}
 labels.quality_hold="谱图已隔离";
 const state = {record:null,nucleus:"13C",sid:null,pid:null,rows:[],offset:0,dirty:false,generation:0,saving:null,timer:null,loading:false,listRequest:0,navigating:null,anchor:null,anchorFilters:null,backStack:[]};
@@ -189,7 +190,7 @@ async function openRecord(id,remember=true,historyOffset=state.offset){if(state.
 function renderHeader(){
   const r=state.record;if(!r)return;
   $("#formula").textContent=r.formula;$("#recordId").textContent=r.id;
-  $("#recordBadges").innerHTML=`<span class="badge">${escape(r.origin)}</span><span class="badge" title="按已保存的归属状态统计，不代表正确性认证">${escape(coverageLabel(r))}</span><span class="badge">${r.task_done?'本轮标注已结束':'尚未结束本轮标注'}</span>`;
+  $("#recordBadges").innerHTML=`<span class="badge">${escape(sourceLabel(r.origin))}</span><span class="badge" title="按已保存的归属状态统计，不代表正确性认证">${escape(coverageLabel(r))}</span><span class="badge">${r.task_done?'本轮标注已结束':'尚未结束本轮标注'}</span>`;
   if(r.ai_history?.length)$('#recordBadges').innerHTML+=`<a class="badge" href="/auto.html?molecule_id=${r.id}" target="_blank" rel="noopener">查看 AI 归属记录 · ${escape([...new Set(r.ai_history.map(x=>x.model))].join(' / '))}</a>`;
   if(window.renderCurationSummary)window.renderCurationSummary(r);
 }
@@ -202,7 +203,7 @@ function renderSpectra(){
   const choices=r.spectra.filter(s=>s.nucleus===state.nucleus).sort(spectrumOrder);
   if(!choices.some(s=>s.id===state.sid))state.sid=choices.find(s=>s.id===selectedSpectra.ids[state.nucleus])?.id||choices[0]?.id;
   if(state.sid)selectedSpectra.ids[state.nucleus]=state.sid;
-  $("#spectrum").innerHTML=choices.map((s,i)=>`<option value="${s.id}">${i+1}. ${escape(s.source)} · ${escape(s.solvent||"溶剂未知")} · ${s.frequency_mhz??"频率未知"}${s.frequency_mhz?" MHz":""} · ${s.peaks.length} 信号 · ${escape(spectrumStateLabel(s))}</option>`).join("")||"<option>没有这类实验谱</option>";
+  $("#spectrum").innerHTML=choices.map((s,i)=>`<option value="${s.id}">${i+1}. ${escape(sourceLabel(s.source))} · ${escape(s.solvent||"溶剂未知")} · ${s.frequency_mhz??"频率未知"}${s.frequency_mhz?" MHz":""} · ${s.peaks.length} 信号 · ${escape(spectrumStateLabel(s))}</option>`).join("")||"<option>没有这类实验谱</option>";
   $("#spectrum").value=state.sid||"";
   const s=spectrum();
   if(!s){$("#peaks").innerHTML="";$("#sourceDetails").textContent="";$("#solventReference").textContent="";state.pid=null;window.renderNumberingNotice?.();window.renderSpectrumCuration?.();renderStructure();return;}
@@ -210,6 +211,15 @@ function renderSpectra(){
   renderPeaks();window.renderSpectrumCuration?.();
   const source=s.provenance;const doi=source.doi;
   $("#sourceDetails").innerHTML=(doi?`<a href="https://doi.org/${encodeURIComponent(doi).replace(/%2F/g,"/")}" target="_blank" rel="noopener">${escape(doi)}</a>`:"")+`<p>${escape(source.source_shard||source.source_file||"")} · ${source.source_row_index!==undefined?"原表行 "+source.source_row_index+"（从 0 开始）":"源记录 "+escape(source.source_record_index||"")}</p>`+(source.original_row?`<p>页码口径：筛选后 NMR 页面索引，不是原 SI 页码。原值 ${escape(source.original_row.Page_in_file_para)}</p><pre>${escape(source.original_row.NMR_shift_text||"")}</pre>`:`<p>ShiftDB2 ID：${escape(source.nmrshiftdb2_id||"")} · ${escape(source.spectrum_field||"")}</p><pre>${escape(s.peaks.map(p=>p.raw_signal||"").join(" | "))}</pre>`);
+  const citations=s.source==='literature_pdf'?[source]:[];
+  if(s.source==='literature_pdf')$("#sourceDetails").replaceChildren();
+  for(const citation of citations.concat(source.literature_assignment_sources || [])){
+    const pages=citation.pdf_pages?.join('、')||citation.pdf_page;
+    const detail=[citation.pdf,pages?`第 ${pages} 页`:'',citation.table?`表 ${citation.table}`:''].filter(Boolean).join(' · ');
+    const doi=citation.doi?` <a href="https://doi.org/${encodeURIComponent(citation.doi).replace(/%2F/g,'/')}" target="_blank" rel="noopener">${escape(citation.doi)}</a>`:'';
+    const job=/^[a-f0-9]{12}$/.test(citation.literature_import_job || '')?` <a href="/literature/?job=${citation.literature_import_job}" target="_blank" rel="noopener">查看提取批次 ↗</a>`:'';
+    $("#sourceDetails").insertAdjacentHTML('beforeend',`<p>${citation.peak_rows_by_id?'补入归属来源':'文献原始来源'} · ${escape(detail)}${doi}${job}</p>`);
+  }
   renderStructure();
 }
 function spectrumForCopy(nucleus){

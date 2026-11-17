@@ -141,6 +141,7 @@ def main():
     finally:
         if httpd is not None:httpd.server_close()
         if hasattr(httpd,'app'):
+            httpd.app.literature.queue.shutdown()
             httpd.app.ai.shutdown();httpd.app.pool.shutdown(wait=True)
             mark_stopped_job(httpd.app,stopped_job)
         lock_file.close()

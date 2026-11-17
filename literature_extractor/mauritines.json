@@ -1,0 +1,174 @@
+{
+  "doi": "10.1002/chem.200401070",
+  "pdf_sha256": "4db3a9b47296b97527c765f446f7ceaa22d49cd58c6f2db4f960b7e3a958406d",
+  "supplement_sha256": "97ed6857f81e18c4331917180fee13f4929f4ec78819d26f4593e0ee27348a79",
+  "reference": "Cristau et al., 2005, Tables 1–4",
+  "compounds": [
+    {
+      "name": "Mauritine A",
+      "compound_number": 5,
+      "table": 1,
+      "journal_page": 2673,
+      "pdf_page": 6,
+      "supplement_pdf_page": 9,
+      "paper_atom_mapped_smiles": "O=[C:4]1[NH:3]/[CH:2]=[CH:1]\\[c:14]2[cH:13][cH:12][c:11]([cH:16][cH:15]2)O[C@@H:9]2[C@H:8](N([C:19](=O)[C@H:20]([CH:21]([CH3:22])[CH3:23])[NH:24][C:25](=O)[C@@H:26](N([CH3:28])[CH3:29])[CH3:27])[CH2:18][CH2:17]2)[C:7](=O)[NH:6][C@H:5]1[CH2:30][c:31]1[cH:32][cH:33][cH:34][cH:35][cH:36]1",
+      "computed_inchikey": "OGCOHPMZUTVUAD-NHFZPNTRSA-N",
+      "conditions": {
+        "solvent": "CDCl3",
+        "instrument": "Bruker Avance-600",
+        "frequencies_mhz": {
+          "1H": 600,
+          "13C": 150
+        },
+        "temperature_k": null,
+        "frequency_source": "article tables footnote a and supporting information General",
+        "chemical_shift_reference": "TMS (supporting information General)"
+      },
+      "source": {
+        "doi": "10.1002/chem.200401070",
+        "sample": "synthetic",
+        "table": 1,
+        "journal_page": 2673,
+        "pdf_page": 6,
+        "supporting_pdf_page": 9
+      },
+      "structure_crosscheck": {
+        "reference_url": "https://pubchem.ncbi.nlm.nih.gov/compound/11353668",
+        "reference_inchikey": "OGCOHPMZUTVUAD-NHFZPNTRSA-N",
+        "hrms_adduct": "[M+H]+",
+        "reported_calculated_mz": 576.3186,
+        "reported_found_mz": 576.3155
+      },
+      "unreported_proton_sites": [],
+      "table_rows": {
+        "1H": 25,
+        "13C": 29
+      }
+    },
+    {
+      "name": "Mauritine B",
+      "compound_number": 6,
+      "table": 2,
+      "journal_page": 2674,
+      "pdf_page": 7,
+      "supplement_pdf_page": 10,
+      "paper_atom_mapped_smiles": "O=[C:4]1[NH:3]/[CH:2]=[CH:1]\\[c:14]2[cH:13][cH:12][c:11]([cH:16][cH:15]2)O[C@@H:9]2[C@H:8](N([C:19](=O)[C@H:20]([CH:21]([CH3:22])[CH3:23])[NH:24][C:25](=O)[C@@H:26](N([CH3:27])[CH3:28])[C@@H:29]([CH3:30])[CH2:31][CH3:32])[CH2:18][CH2:17]2)[C:7](=O)[NH:6][C@H:5]1[CH2:33][c:34]1[cH:35][cH:36][cH:37][cH:38][cH:39]1",
+      "computed_inchikey": "WUCBFSOLOVAHQC-QXSALDHOSA-N",
+      "conditions": {
+        "solvent": "CDCl3",
+        "instrument": "Bruker Avance-600",
+        "frequencies_mhz": {
+          "1H": 600,
+          "13C": 150
+        },
+        "temperature_k": null,
+        "frequency_source": "article tables footnote a and supporting information General",
+        "chemical_shift_reference": "TMS (supporting information General)"
+      },
+      "source": {
+        "doi": "10.1002/chem.200401070",
+        "sample": "synthetic",
+        "table": 2,
+        "journal_page": 2674,
+        "pdf_page": 7,
+        "supporting_pdf_page": 10
+      },
+      "structure_crosscheck": {
+        "reference_url": null,
+        "reference_inchikey": null,
+        "hrms_adduct": "[M+H]+",
+        "reported_calculated_mz": 618.3655,
+        "reported_found_mz": 618.3654
+      },
+      "unreported_proton_sites": [],
+      "table_rows": {
+        "1H": 29,
+        "13C": 32
+      }
+    },
+    {
+      "name": "Mauritine C",
+      "compound_number": 7,
+      "table": 3,
+      "journal_page": 2675,
+      "pdf_page": 8,
+      "supplement_pdf_page": 11,
+      "paper_atom_mapped_smiles": "O=[C:4]1[NH:3]/[CH:2]=[CH:1]\\[c:14]2[cH:13][cH:12][c:11]([cH:16][cH:15]2)O[C@@H:9]2[C@H:8](N([C:19](=O)[C@H:20]([CH:21]([CH3:22])[CH3:23])[NH:24][CH3:25])[CH2:18][CH2:17]2)[C:7](=O)[NH:6][C@H:5]1[CH2:26][c:27]1[cH:28][cH:29][cH:30][cH:31][cH:32]1",
+      "computed_inchikey": "PQMYDJKBJAJSEN-WHAOFZNWSA-N",
+      "conditions": {
+        "solvent": "CDCl3",
+        "instrument": "Bruker Avance-600",
+        "frequencies_mhz": {
+          "1H": 600,
+          "13C": 150
+        },
+        "temperature_k": null,
+        "frequency_source": "article tables footnote a and supporting information General",
+        "chemical_shift_reference": "TMS (supporting information General)"
+      },
+      "source": {
+        "doi": "10.1002/chem.200401070",
+        "sample": "synthetic",
+        "table": 3,
+        "journal_page": 2675,
+        "pdf_page": 8,
+        "supporting_pdf_page": 11
+      },
+      "structure_crosscheck": {
+        "reference_url": "https://cb.imsc.res.in/imppat/phytochemical-detailedpage/IMPPAT3_PHYID017353",
+        "reference_inchikey": "PQMYDJKBJAJSEN-WHAOFZNWSA-N",
+        "hrms_adduct": "[M+H]+",
+        "reported_calculated_mz": 491.2658,
+        "reported_found_mz": 491.264
+      },
+      "unreported_proton_sites": [],
+      "table_rows": {
+        "1H": 23,
+        "13C": 26
+      }
+    },
+    {
+      "name": "Mauritine F",
+      "compound_number": 10,
+      "table": 4,
+      "journal_page": 2676,
+      "pdf_page": 9,
+      "supplement_pdf_page": 12,
+      "paper_atom_mapped_smiles": "O=[C:4]1[NH:3]/[CH:2]=[CH:1]\\[c:14]2[cH:13][cH:12][c:11]([cH:16][cH:15]2)O[C@@H:9]2[C@H:8](N([C:19](=O)[C@H:20]([CH:21]([CH3:22])[CH3:23])[NH:24][C:25](=O)[C@H:26]([CH3:27])[NH:28][CH3:29])[CH2:18][CH2:17]2)[C:7](=O)[NH:6][C@H:5]1[CH2:30][c:31]1[cH:32][cH:33][cH:34][cH:35][cH:36]1",
+      "computed_inchikey": "SPSYCEMRUOEUCT-AYRKWDKNSA-N",
+      "conditions": {
+        "solvent": "CDCl3",
+        "instrument": "Bruker Avance-600",
+        "frequencies_mhz": {
+          "1H": 600,
+          "13C": 150
+        },
+        "temperature_k": null,
+        "frequency_source": "article tables footnote a and supporting information General",
+        "chemical_shift_reference": "TMS (supporting information General)"
+      },
+      "source": {
+        "doi": "10.1002/chem.200401070",
+        "sample": "synthetic",
+        "table": 4,
+        "journal_page": 2676,
+        "pdf_page": 9,
+        "supporting_pdf_page": 12
+      },
+      "structure_crosscheck": {
+        "reference_url": "https://pubchem.ncbi.nlm.nih.gov/compound/57402357",
+        "reference_inchikey": "SPSYCEMRUOEUCT-AYRKWDKNSA-N",
+        "hrms_adduct": "[M+Na]+",
+        "reported_calculated_mz": 584.2849,
+        "reported_found_mz": 584.2845
+      },
+      "unreported_proton_sites": [
+        "H28"
+      ],
+      "table_rows": {
+        "1H": 24,
+        "13C": 29
+      }
+    }
+  ]
+}

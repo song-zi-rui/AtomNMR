@@ -11,10 +11,12 @@ import uuid
 import webbrowser
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, unquote, urlparse
+from literature_extractor.importer import LiteratureImporter
+from literature_extractor.server import ExtractionService, Handler as LiteratureHandler
 
 from . import core as db
 from .exporters import export_database, preview_database
@@ -49,6 +51,8 @@ class App:
         self.started_at = db.now()
         with closing(db.connect(self.path)) as c:
             db.initialize(c)
+        self.literature = ExtractionService(artifacts_root(self.path) / "literature_extraction" / self.path.stem,
+                                            importer=LiteratureImporter(self.path, self.invalidate_stats), prefix='/literature')
         self.jobs = {}
         self.pool = ThreadPoolExecutor(max_workers=1)
         self.lock = threading.Lock()
@@ -57,6 +61,9 @@ class App:
         self.ai = (manager_factory or AIAnnotationManager)(self.path)
         self.auto = AutomaticAnnotationService(self.ai)
         self.benchmark = BenchmarkService(self.ai)
+
+    def invalidate_stats(self):
+        self.stats_at = 0.
 
     def stats(self):
         # One count scan per interval, even when several pages request it.
@@ -110,7 +117,7 @@ class App:
         return {"job_id": job}
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(LiteratureHandler):
     server_version = "NMRDatabase/1"
 
     def disconnected(self):
@@ -144,6 +151,16 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         params = {k: v[-1] for k, v in parse_qs(parsed.query).items()}
         try:
+            if path == '/literature':
+                self.send_response(302)
+                self.send_header('Location', '/literature/' + ('?' + parsed.query if parsed.query else ''))
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            if path.startswith('/literature/'):
+                return self.get_literature(path.removeprefix('/literature'), self.server.app.literature)
+            if path == '/api/literature/stats':
+                return self.send(self.server.app.literature.queue.statistics())
             if path.startswith("/api/export/"):
                 job = path.split("/")[3]
                 value = self.server.app.jobs.get(job)
@@ -266,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path.startswith('/literature/'):
+                return self.post_literature(self.path.removeprefix('/literature'), self.server.app.literature)
             origin = self.headers.get("Origin")
             expected = "http://" + self.headers.get("Host", "")
             if origin and origin != expected:
@@ -389,6 +408,7 @@ def main():
         server.serve_forever()
     finally:
         server.server_close()
+        server.app.literature.queue.shutdown()
         server.app.pool.shutdown(wait=True)
         server.app.ai.shutdown()
 
