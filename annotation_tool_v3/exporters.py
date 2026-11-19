@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from . import core as db
+from . import computed_spectra
 from .export_policy import Policy
 
 
@@ -84,19 +85,25 @@ def parquet_schema():
                       ("status", pa.string()), ("atom_indices", pa.list_(pa.int32())),
                       ("annotation_origin", pa.string()), ("ai_provenance_json", pa.string())])
     spectrum = pa.struct([("id", pa.string()), ("nucleus", pa.string()), ("source", pa.string()),
+                          ("spectrum_kind", pa.string()),
                           ("solvent", pa.string()), ("frequency_mhz", pa.float64()), ("temperature_k", pa.float64()),
                           ("peaks", pa.list_(peak))])
     return pa.schema([("id", pa.string()), ("smiles", pa.string()), ("formula", pa.string()), ("origin", pa.string()),
                       ("queue", pa.string()), ("revision", pa.int64()), ("spectra", pa.list_(spectrum)),
+                      ("spectrum_type", pa.string()), ("assignment_coverage", pa.string()), ("nuclei", pa.string()),
                       ("record_json", pa.string())])
 
 
 def parquet_row(r):
     v = {k: r[k] for k in ("id", "smiles", "formula", "origin", "queue", "revision")}
+    v["spectrum_type"] = r["export_classification"]["spectrum_type"]
+    v["assignment_coverage"] = r["export_classification"]["coverage"]
+    v["nuclei"] = r["export_classification"]["nuclei"]
     v["record_json"] = db.dumps(r)
     v["spectra"] = []
     for s in r["spectra"]:
         item = {k: s[k] for k in ("id", "nucleus", "source", "solvent", "frequency_mhz", "temperature_k")}
+        item["spectrum_kind"] = s.get("spectrum_kind", "experimental")
         item["peaks"] = [{**{k: p.get(k) for k in ("peak_id", "shift_ppm", "multiplicity", "reported_nH", "j_values")},
                           "status": p["assignment"]["status"], "atom_indices": p["assignment"]["atom_indices"],
                           "annotation_origin": p['assignment'].get('origin'),
@@ -105,7 +112,8 @@ def parquet_row(r):
     return v
 
 
-def export_database(path, output_root, fmt, filters=None, molecule_id=None, training_options=None, progress=None, export_options=None):
+def export_database(path, output_root, fmt, filters=None, molecule_id=None, training_options=None, progress=None,
+                    export_options=None):
     policy=Policy(export_options)
     if fmt not in ("jsonl", "parquet", "lmdb", "atompeak"):
         raise ValueError("Unsupported format")
@@ -113,15 +121,14 @@ def export_database(path, output_root, fmt, filters=None, molecule_id=None, trai
     if fmt == 'atompeak':
         from atompeak_data.export import export_training_dataset
         return export_training_dataset(path, folder, filters=filters, molecule_id=molecule_id,
-            archive=True, progress=progress, export_options=export_options, **(training_options or {}))
+            archive=True, progress=progress, export_options=export_options,
+            **(training_options or {}))
     folder.mkdir(parents=True)
     target = folder / ("records." + fmt)
     c = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True, timeout=60)
     c.row_factory = sqlite3.Row
     c.execute("BEGIN")
-    where, args = db.selection_where(filters or {})
-    if molecule_id:
-        where, args = " WHERE id=?", [molecule_id]
+    where, args = candidate_selection(c, policy, filters, molecule_id)
     ids = c.execute("SELECT id FROM molecules" + where + " ORDER BY id", args)
     total=c.execute('SELECT count(*) FROM molecules'+where,args).fetchone()[0]
     count = 0
@@ -131,10 +138,9 @@ def export_database(path, output_root, fmt, filters=None, molecule_id=None, trai
     def eligible_records():
         nonlocal skipped
         for row in ids:
-            value = db.record(c, row[0], require_quality=strict)
-            accepted=policy.accept(value)
+            value = selected_record(c, row[0], policy, strict)
             if progress and policy.scanned%100==0:progress({'processed':policy.scanned,'total':total,'exported':policy.kept})
-            if not accepted:
+            if value is None:
                 skipped += 1
                 continue
             yield value
@@ -197,10 +203,12 @@ def export_database(path, output_root, fmt, filters=None, molecule_id=None, trai
                     "filters": filters or {}, "molecule_id": molecule_id, "sha256": digest.hexdigest(),
                     "export_selection":policy.report(),
                     "atom_index_basis": "zero_based_canonical_smiles", "h_assignment": "attached_heavy_atom",
-                    "review_required": False, "has_raw_fid": False, "experimental_only": True,
+                    "review_required": False, "has_raw_fid": False,
+                    "spectrum_type": policy.options["spectrum_type"],
+                    "experimental_only": policy.options["spectrum_type"] == "experimental",
                     "application_compatibility": "annotation-tool-v3; not a drop-in replacement for every NMRPeak training reader",
                     "scope": "curated molecules only; unresolved source candidates are not fabricated",
-                    "spectrum_version_policy": "current revised spectra only; originals and historical versions are reference-only",
+                    "spectrum_version_policy": "current active spectra; held and historical versions excluded",
                     "split_policy": "not split; group identical connectivity when generating training splits"}
         (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"file": str(target), "manifest": str(folder / "manifest.json"), "count": count,'selection':policy.report()}
@@ -208,19 +216,57 @@ def export_database(path, output_root, fmt, filters=None, molecule_id=None, trai
         c.close()
 
 
-def preview_database(path,filters=None,molecule_id=None,export_options=None,progress=None,require_quality=False):
+def source_catalog(c):
+    return {
+        'experimental': [r[0] for r in c.execute('SELECT DISTINCT source FROM spectra ORDER BY source')],
+        'computed': [r[0] for r in c.execute('SELECT DISTINCT source FROM computed_spectra ORDER BY source')]
+                    if computed_spectra.exists(c) else [],
+    }
+
+
+def candidate_selection(c, policy, filters=None, molecule_id=None):
+    where, args = db.selection_where(filters or {})
+    if molecule_id:
+        return ' WHERE id=?', [molecule_id]
+    kind, source = (policy.options[k] for k in ('spectrum_type', 'spectrum_source'))
+    if kind == 'computed' and not computed_spectra.exists(c):
+        return where + (' AND ' if where else ' WHERE ') + '0', args
+    if kind == 'experimental' and not source:
+        return where, args
+    table = 'computed_spectra' if kind == 'computed' else 'spectra'
+    clause = f'id IN (SELECT molecule_id FROM {table}' + (' WHERE source=?' if source else '') + ')'
+    return where + (' AND ' if where else ' WHERE ') + clause, [*args, source] if source else args
+
+
+def selected_record(c, mid, policy, strict, *, single_view=False):
+    record = db.record(c, mid, require_quality=strict,
+                       include_computed=policy.options['spectrum_type'] == 'computed')
+    return policy.select(record, single_view=single_view)
+
+
+def preview_database(path, filters=None, molecule_id=None, export_options=None, progress=None,
+                     require_quality=False, *, single_view=False):
     policy=Policy(export_options)
-    c=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=60);c.row_factory=sqlite3.Row
+    c=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=60)
+    c.row_factory=sqlite3.Row
     try:
-        c.execute('BEGIN');where,args=db.selection_where(filters or {})
-        if molecule_id:where,args=' WHERE id=?',[molecule_id]
-        strict=c.execute("SELECT value FROM meta WHERE key='quality_export_enforced'").fetchone()
-        strict=require_quality or bool(strict and json.loads(strict[0]));total=c.execute('SELECT count(*) FROM molecules'+where,args).fetchone()[0]
+        c.execute('BEGIN')
+        where,args=candidate_selection(c, policy, filters, molecule_id)
+        enforced=c.execute("SELECT value FROM meta WHERE key='quality_export_enforced'").fetchone()
+        strict=require_quality or bool(enforced and json.loads(enforced[0]))
+        total=c.execute('SELECT count(*) FROM molecules'+where,args).fetchone()[0]
         examples=[]
         for row in c.execute('SELECT id FROM molecules'+where+' ORDER BY id',args):
-            record=db.record(c,row[0],require_quality=strict)
-            if policy.accept(record) and len(examples)<20:examples.append({'id':record['id'],'formula':record['formula']})
-            if progress and policy.scanned%100==0:progress({'processed':policy.scanned,'total':total,'exported':policy.kept})
-        return {'preview':True,'count':policy.kept,'selection':policy.report(),'examples':examples,
-                'note':'预览和正式导出各自读取一致性快照；期间数据库修改可能使数量变化。训练包还会检查序列长度及可用监督，最终数量以导出清单为准。'}
-    finally:c.close()
+            record=selected_record(c,row[0],policy,strict,single_view=single_view)
+            if record is not None and len(examples)<20:
+                examples.append({'id':record['id'],'formula':record['formula'],
+                                 **record['export_classification'],
+                                 'sources':sorted({s['source'] for s in record['spectra']})})
+            if progress and policy.scanned%100==0:
+                progress({'processed':policy.scanned,'total':total,'exported':policy.kept})
+        note='预览和正式导出各自读取一致性快照。'
+        if single_view:
+            note+='训练包另行检查序列长度和模型输入，最终数量以导出清单为准。'
+        return {'preview':True,'count':policy.kept,'selection':policy.report(),'examples':examples,'note':note}
+    finally:
+        c.close()

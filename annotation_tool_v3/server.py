@@ -19,7 +19,7 @@ from literature_extractor.importer import LiteratureImporter
 from literature_extractor.server import ExtractionService, Handler as LiteratureHandler
 
 from . import core as db
-from .exporters import export_database, preview_database
+from .exporters import export_database, preview_database, source_catalog
 from .export_policy import validate as validate_export_options
 from . import curation
 from . import numbering
@@ -77,6 +77,8 @@ class App:
 
     def export(self, payload, preview=False):
         if not isinstance(payload,dict) or not isinstance(payload.get('filters') or {},dict):raise ValueError('导出参数及基础筛选应为对象')
+        if set(payload)-{'format','filters','molecule_id','export_options','training_options'}:
+            raise ValueError('导出设置已变更，请刷新导出页并重新选择谱类型和来源。')
         export_options=validate_export_options(payload.get('export_options'))
         if payload.get("format") not in ("jsonl", "parquet", "lmdb", "atompeak"):
             raise ValueError("导出格式无效")
@@ -107,9 +109,12 @@ class App:
                 def update(info):
                     self.jobs[job] = {'state':'running', **info}
                 if preview:
-                    result=preview_database(self.path,payload.get('filters'),payload.get('molecule_id'),export_options,update,require_quality=payload['format']=='atompeak')
+                    result=preview_database(self.path,payload.get('filters'),payload.get('molecule_id'),export_options,update,
+                        require_quality=payload['format']=='atompeak',single_view=payload['format']=='atompeak')
                 else:
-                    result = export_database(self.path, artifacts_root(self.path) / "exports", payload["format"], payload.get("filters"), payload.get("molecule_id"), training_options=training_options, progress=update,export_options=export_options)
+                    result = export_database(self.path, artifacts_root(self.path) / "exports", payload["format"],
+                        payload.get("filters"), payload.get("molecule_id"), training_options=training_options, progress=update,
+                        export_options=export_options)
                 self.jobs[job] = {"state": "done", **result}
             except Exception as exc:
                 self.jobs[job] = {"state": "error", "error": str(exc)}
@@ -161,6 +166,9 @@ class Handler(LiteratureHandler):
                 return self.get_literature(path.removeprefix('/literature'), self.server.app.literature)
             if path == '/api/literature/stats':
                 return self.send(self.server.app.literature.queue.statistics())
+            if path == '/api/export/sources':
+                with closing(db.connect(self.server.app.path)) as c:
+                    return self.send(source_catalog(c))
             if path.startswith("/api/export/"):
                 job = path.split("/")[3]
                 value = self.server.app.jobs.get(job)
@@ -247,7 +255,8 @@ class Handler(LiteratureHandler):
                             if any(x < 0 or x >= mol.GetNumAtoms() for x in selected):
                                 raise ValueError("原子编号错误")
                             return self.send(db.molecule_svg(r[0], selected, params.get('view', 'auto')).encode(), "image/svg+xml")
-                        return self.send(db.record(c, mid, include_archived=True))
+                        c.execute('BEGIN')
+                        return self.send(db.record(c, mid, include_archived=True, include_computed=True))
                 return self.send({"error": "接口不存在"}, status=404)
             if path == "/nmr_reference.js":
                 file = db.ROOT / "annotation_tool_v2/static/nmr_reference.js"
@@ -343,7 +352,8 @@ class Handler(LiteratureHandler):
                     if parts[4]=='rename':return self.send(auto.rename(parts[3],payload.get('name')))
                     if parts[4]=='delete':return self.send(auto.delete(parts[3]))
                     if parts[4]=='pause':return self.send(auto.pause(parts[3]))
-                    if parts[4]=='resume':return self.send(auto.resume(parts[3],payload.get('use_current_limits') is True))
+                    if parts[4]=='resume':return self.send(auto.resume(parts[3],payload.get('use_current_limits') is True,
+                                                                      switch_to_model=payload.get('switch_to_model')))
                     if parts[4]=='retry':return self.send(auto.retry_failed(parts[3],payload.get('item_id'),payload.get('mode','failed')))
                     if parts[4]=='analyze':return self.send(auto.analyze(parts[3]))
                 return self.send({'error':'自动标注接口不存在'},status=404)

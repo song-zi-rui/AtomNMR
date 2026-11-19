@@ -15,7 +15,6 @@ from pathlib import Path
 from .schema import SCHEMA_VERSION, build_record, split_for_connectivity
 from .tokenization import ROOT, Vocabulary, tokenize_spectrum
 
-
 def has_supervision(record):
     return any(any(any(row) for row in record['alignment_supervision'][b]['pair_known_mask'])
         or any(record['alignment_supervision'][b]['allowed_row_mask'])
@@ -34,13 +33,19 @@ def prepare_record(raw, source_vocab, target_vocab, tokenization, require_superv
     return value,labelled
 
 
+def _tokenization(max_seq_len, max_target_len, use_solvent, use_temperature, use_field_strength):
+    return {'max_seq_len': max_seq_len, 'max_target_len': max_target_len, 'use_formula': True,
+            'use_h_category': True, 'use_h_nh': True, 'use_h_jvalue': True, 'use_range_shift': False,
+            'use_solvent': use_solvent, 'use_temperature': use_temperature, 'use_field_strength': use_field_strength}
+
+
 def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
                             molecule_ids=None, seed=42, valid_ratio=.1, test_ratio=.1,
                             max_seq_len=1024, max_target_len=512, archive=False, progress=None,
                             use_solvent=False, use_temperature=False, use_field_strength=False,
                             require_supervision=False, export_options=None):
-    from annotation_tool_v3 import core as db
     from annotation_tool_v3.export_policy import Policy
+    from annotation_tool_v3.exporters import candidate_selection, selected_record
     policy=Policy(export_options)
     import lmdb
     split_for_connectivity('validate', seed, valid_ratio, test_ratio)
@@ -48,6 +53,7 @@ def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
         raise ValueError('Empty molecule selection')
     if not 8 <= min(max_seq_len,max_target_len) <= max(max_seq_len,max_target_len) <= 8192:
         raise ValueError('Training sequence lengths must be between 8 and 8192')
+    tokenization = _tokenization(max_seq_len, max_target_len, use_solvent, use_temperature, use_field_strength)
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     if any(folder.iterdir()):
@@ -60,30 +66,28 @@ def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
     c = sqlite3.connect(f'file:{Path(database).resolve().as_posix()}?mode=ro', uri=True, timeout=60)
     c.row_factory = sqlite3.Row
     c.execute('BEGIN')
-    where, values = db.selection_where(filters or {})
-    if molecule_id:
-        where, values = ' WHERE id=?', [molecule_id]
-    elif molecule_ids is not None:
+    where, values = candidate_selection(c, policy, filters, molecule_id)
+    if not molecule_id and molecule_ids is not None:
         c.execute('CREATE TEMP TABLE export_selection(id TEXT PRIMARY KEY)')
         c.executemany('INSERT OR IGNORE INTO export_selection VALUES(?)',((mid,) for mid in molecule_ids))
-        where, values = ' WHERE id IN (SELECT id FROM export_selection)', []
+        where += (' AND ' if where else ' WHERE ') + 'id IN (SELECT id FROM export_selection)'
     total = c.execute('SELECT count(*) FROM molecules' + where, values).fetchone()[0]
     manifest = {'schema_version': SCHEMA_VERSION, 'state': 'running',
         'created_at': datetime.now(timezone.utc).isoformat(), 'database': str(Path(database).resolve()),
         'split_policy': {'method':'sha256_connectivity_group_v1','seed':seed,'valid_ratio':valid_ratio,'test_ratio':test_ratio},
         'grouping_policy':'individual_atoms_v1', 'initialization':'random_from_scratch',
-        'tokenization': {'max_seq_len':max_seq_len,'max_target_len':max_target_len,'use_formula':True,
-                         'use_h_category':True,'use_h_nh':True,'use_h_jvalue':True,'use_range_shift':False,
-                         'use_solvent':use_solvent,'use_temperature':use_temperature,'use_field_strength':use_field_strength},
+        'tokenization': tokenization,
         'quality_export_enforced':True,'source_candidates_not_fabricated':True,
         'unknown_labels_are_not_negative':True, 'full_assignment_does_not_certify_spectral_completeness':True,
         'filters':filters or {}, 'selection_molecule_id':molecule_id,
-        'require_usable_assignment_supervision':require_supervision}
+        'require_usable_assignment_supervision':require_supervision,
+        'spectrum_type':policy.options['spectrum_type']}
     manifest_path = folder/'manifest.json'
     manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     lmdb_dir = folder/'lmdb_dataset';lmdb_dir.mkdir()
     envs = {s:lmdb.open(str(lmdb_dir/f'{s}.lmdb'),subdir=False,map_size=32*1024**2) for s in ('train','valid','test')}
     batches = {s:[] for s in envs};counts=Counter();classes=Counter();reasons=Counter();scanned=0
+    source_counts = {}
     fingerprint=hashlib.sha256();started=time.monotonic()
     def flush(split):
         if not batches[split]:return
@@ -97,30 +101,42 @@ def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
         info={'processed':scanned,'total':total,'exported':sum(counts.values()),'splits':dict(counts),
               'elapsed_seconds':round(time.monotonic()-started,1)}
         if progress:progress(info)
+
+    def save_record(record, has_labels, revision, index):
+        source = ' + '.join(sorted({s['source'] or 'unknown' for s in record['provenance']['spectrum_sources'].values() if s}))
+        split = split_for_connectivity(record['connectivity_key'], seed, valid_ratio, test_ratio)
+        record['split'] = split
+        payload = pickle.dumps(record, protocol=4)
+        fingerprint.update(record['id'].encode() + payload)
+        batches[split].append((f'{counts[split]:012d}'.encode(), payload))
+        counts[split] += 1
+        source_counts.setdefault(source, Counter())[split] += 1
+        mode = 'dual' if all(record['branch_present'].values()) else 'carbon_only' if record['branch_present']['carbon'] else 'proton_only'
+        classes[mode] += 1
+        for branch in ('carbon', 'proton'):
+            labels = record['alignment_supervision'][branch]
+            classes[branch + '_hard_peaks'] += sum(any(r) for r in labels['pair_known_mask'])
+            classes[branch + '_weak_peaks'] += sum(labels['allowed_row_mask'])
+            classes[branch + '_unordered_sets'] += len(labels['set_peak_membership'])
+        index_entry = {'id': record['id'], 'split': split, 'connectivity_key': record['connectivity_key'],
+                       'mode': mode, 'has_supervision': bool(has_labels), 'revision': revision,
+                       'selected_spectrum_ids': record['provenance']['selected_spectrum_ids']}
+        index_entry.update(data_source=source, data_domain=record['data_domain'],
+                           assignment_coverage=record['provenance']['assignment_coverage'])
+        index.write(json.dumps(index_entry, ensure_ascii=False) + '\n')
+        if len(batches[split]) >= 200:
+            flush(split)
+
     try:
         with (folder/'records_index.jsonl').open('w',encoding='utf-8') as index, (folder/'skipped_records.jsonl').open('w',encoding='utf-8') as skipped:
-            for row in c.execute('SELECT id FROM molecules'+where+' ORDER BY id',values):
+            rows = c.execute('SELECT id FROM molecules' + where + ' ORDER BY id', values)
+            for row in rows:
                 scanned+=1
                 try:
-                    raw=db.record(c,row['id'],require_quality=True)
-                    if not policy.accept(raw):raise ValueError('export_policy_filtered')
+                    raw=selected_record(c,row['id'],policy,True,single_view=True)
+                    if raw is None:raise ValueError('export_policy_filtered')
                     record,has_labels=prepare_record(raw,source_vocab,target_vocab,manifest['tokenization'],require_supervision)
-                    split=split_for_connectivity(record['connectivity_key'],seed,valid_ratio,test_ratio)
-                    record['split']=split
-                    payload=pickle.dumps(record,protocol=4)
-                    fingerprint.update(record['id'].encode()+payload)
-                    batches[split].append((f'{counts[split]:012d}'.encode(),payload));counts[split]+=1
-                    mode='dual' if all(record['branch_present'].values()) else 'carbon_only' if record['branch_present']['carbon'] else 'proton_only'
-                    classes[mode]+=1
-                    for branch in ('carbon','proton'):
-                        labels=record['alignment_supervision'][branch]
-                        classes[branch+'_hard_peaks']+=sum(any(r) for r in labels['pair_known_mask'])
-                        classes[branch+'_weak_peaks']+=sum(labels['allowed_row_mask'])
-                        classes[branch+'_unordered_sets']+=len(labels['set_peak_membership'])
-                    index.write(json.dumps({'id':record['id'],'split':split,'connectivity_key':record['connectivity_key'],
-                        'mode':mode,'has_supervision':bool(has_labels),'revision':raw['revision'],
-                        'selected_spectrum_ids':record['provenance']['selected_spectrum_ids']},ensure_ascii=False)+'\n')
-                    if len(batches[split])>=200:flush(split)
+                    save_record(record, has_labels, raw['revision'], index)
                 except (ValueError,KeyError,TypeError,RuntimeError) as exc:
                     reason=str(exc);reasons[reason]+=1
                     skipped.write(json.dumps({'id':row['id'],'reason':reason},ensure_ascii=False)+'\n')
@@ -132,6 +148,8 @@ def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
                         export_selection=policy.report(),
                         vocab_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in vocab_dir.iterdir()},
                         warnings=['A split is empty; use a larger selection for training.'] if any(not counts[s] for s in envs) else [])
+        manifest['source_split_counts'] = {source: {s: counter[s] for s in envs}
+                                           for source, counter in source_counts.items()}
     except Exception as exc:
         manifest.update(state='failed',error=str(exc));raise
     finally:
@@ -146,5 +164,7 @@ def export_training_dataset(database, folder, *, filters=None, molecule_id=None,
             for file in sorted(folder.rglob('*')):
                 if file.is_file() and file!=target and not file.name.endswith('-lock'):
                     z.write(file,file.relative_to(folder))
-    return {'file':str(target),'dataset_dir':str(folder),'manifest':str(manifest_path),
-            'count':manifest['records'],'split_counts':manifest['split_counts'],'skipped':total-manifest['records'],'selection':policy.report()}
+    result = {'file':str(target),'dataset_dir':str(folder),'manifest':str(manifest_path),
+              'count':manifest['records'],'split_counts':manifest['split_counts'],'skipped':total-manifest['records'],'selection':policy.report()}
+    result['source_split_counts'] = manifest['source_split_counts']
+    return result

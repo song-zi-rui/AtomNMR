@@ -218,7 +218,8 @@ def action(c, mid, payload, reference=None):
         c.execute('UPDATE molecules SET revision=revision+1,task_done=0 WHERE id=?', (mid,))
         db.refresh_molecule(c, mid)
         db.touch_activity(c, mid, 'curation:' + name)
-        result = {'record': db.record(c, mid, include_archived=True), 'management': details(c, mid), 'event': event}
+        result = {'record': db.record(c, mid, include_archived=True, include_computed=True),
+                  'management': details(c, mid), 'event': event}
         c.commit()
         return result
     except Exception:

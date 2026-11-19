@@ -3,7 +3,7 @@
 labels.manual_hold="人工暂时停用";
 labels.excluded_training="排除训练";
 const managementLabels={active:"当前数据集（导出）",held:"暂时停用",excluded:"排除训练",reference:"参考版本（不导出）",superseded:"历史参考（不导出）",unknown:"完整性未核实",incomplete:"峰表不完整",complete:"已核实完整",not_checked:"未做自动检查",passed:"通过自动检查",quarantined:"自动隔离"};
-const managementActions={disposition:"更改使用状态",issue:"记录问题",resolve_issue:"标记问题已处理",completeness:"记录谱完整性",clone:"新建归属修订副本",import_bmrb:"引入 BMRB 参考",adopt:"采用版本"};
+const managementActions={disposition:"更改使用状态",issue:"记录问题",resolve_issue:"标记问题已处理",completeness:"记录谱完整性",clone:"新建归属修订副本",import_bmrb:"引入 BMRB 参考",adopt:"采用版本",verified_experimental_source_restore:"核对原文后解除隔离"};
 const sourceNames={nmrshiftdb2:'ShiftDB2 原库',NMRexp:'NMRexp',literature_pdf:'文献归属',manual_revision:'人工修订谱',BMRB_reference:'BMRB 实验参考'};
 let management=null,managementBusy=false;
 $("#queue").insertAdjacentHTML("beforeend",'<option value="quality_hold">自动隔离后无可用谱</option><option value="manual_hold">人工暂时停用</option><option value="excluded_training">排除训练</option>');
@@ -58,7 +58,8 @@ window.renderCurationSummary=r=>{
  $(".workgrid").inert=false;
  $('#recordNote').readOnly=held;
  $('#restoreMolecule').hidden=!held;
- $("#save").disabled=held;$("#complete").disabled=held;$("#completeNext").disabled=held||!!state.navigating;
+ const computedOnly=r.queue==='simulation_only';
+ $("#save").disabled=held;$("#complete").disabled=held||computedOnly;$("#completeNext").disabled=held||computedOnly||!!state.navigating;
  window.renderSpectrumCuration();
 };
 window.renderSpectrumCuration=()=>{
@@ -68,6 +69,7 @@ window.renderSpectrumCuration=()=>{
  if(s&&s.manual_state&&s.manual_state!=='active')summary.push(managementLabels[s.manual_state]||s.manual_state);
  if(s?.completeness?.status&&s.completeness.status!=='unknown')summary.push(managementLabels[s.completeness.status]);
  $('#curationSummary').textContent=summary.join(' · ');$('#curationSummary').hidden=!summary.length;
+ $('#manageOpen').hidden=s?.spectrum_kind==='computed';
  $('#manageOpen').textContent=s?'管理当前谱':'数据管理';
  $('#spectrumUseState').hidden=!s||canEditSpectrum(s);
  $('#spectrumUseText').textContent=s?(spectrumStateLabel(s)+' · 只读'):'';

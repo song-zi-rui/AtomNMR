@@ -109,7 +109,7 @@ def review(c,mid,payload,*,source_index=DEFAULT_INDEX):
             (mid,sid,option['candidate_id'] if option else previous['candidate_id'],decision,note,db.dumps(flow),db.dumps(before),db.dumps(after),target_id,db.now()))
         c.execute('UPDATE molecules SET revision=revision+1,task_done=0 WHERE id=?',(mid,))
         db.refresh_molecule(c,mid);db.touch_activity(c,mid,'numbering_'+decision)
-        result=db.record(c,mid,include_archived=True)
+        result=db.record(c,mid,include_archived=True,include_computed=True)
         result['numbering_result']={'decision':decision,'changed_peaks':len(after),'preserved_manual_or_later_edits':preserved}
         c.commit();return result
     except Exception:c.rollback();raise

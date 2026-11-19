@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const viewParams=new URLSearchParams(location.search);
-const state={job:viewParams.get('job'),status:null,poll:null,replace:null,keys:[],selectedKey:null,selectedItem:null,busy:false,activeId:null,jobs:[],serverMode:false};
+const state={job:viewParams.get('job'),taskModel:null,status:null,poll:null,replace:null,keys:[],selectedKey:null,selectedItem:null,busy:false,activeId:null,jobs:[],serverMode:false};
 if(viewParams.get('results')==='applied')$('resultFilter').value='applied';
 const names={running:'持续标注中',pausing:'停止派发 · 等待已发请求完成',paused:'已暂停',interrupted:'服务中断 · 可恢复',attention:'需要处理错误',completed:'所选队列已处理完',pending:'等待调用',calling:'分析中',responded:'已收响应 · 待校验',received:'等待入库',done:'已存数据库',error:'失败',resolved:'后续任务已完成',skipped:'已标注 · 跳过'};
 const jobLabel=j=>j.name||'任务 '+j.id.slice(0,8);
@@ -52,8 +52,18 @@ $('credentialRows').onclick=async e=>{const b=e.target.closest('[data-key]');if(
 $('credential').onchange=async()=>{if(!$('credential').value)return;try{await api('/api/ai/credentials',{action:'activate',id:$('credential').value});await keys();}catch(e){message(e.message);$('credential').value=state.selectedKey||'';}};
 action('start',async()=>{await saveConfig();const payload={scope:$('scope').value},name=$('newJobName').value.trim();if(name)payload.name=name;const r=await api('/api/auto/jobs',payload);state.job=r.job_id;$('analysis').hidden=true;await refresh();});
 action('pause',async()=>{await api('/api/auto/jobs/'+state.job+'/pause',{});await refresh();});
-action('resume',async()=>{await saveConfig();await api('/api/auto/jobs/'+state.job+'/resume',{use_current_limits:true});await refresh();message('已继续原任务：成功和失败记录都不会重复请求，继续处理后续分子。失败分子请单独选择“重试失败分子”。');});
-async function retry(job,itemId,mode='failed'){if(mode!=='local')await saveConfig();const body=itemId?{item_id:itemId}:{};if(mode!=='failed')body.mode=mode;const r=await api('/api/auto/jobs/'+job+'/retry',body);state.job=r.job_id;state.selectedItem=null;$('detail').hidden=true;$('analysis').hidden=true;await refresh();if(r.retry_in_place){message(r.selected?'已在原任务中重新提交 '+r.selected+' 个失败分子；此前失败记录已归档。'+(r.skipped?'另有 '+r.skipped+' 个已由其他处理完成并跳过。':''):'没有需要重新提交的失败分子。');return;}message((r.selected===0?'这些分子都已在后续标注中处理，本次没有调用 API。':mode==='local'?'已建立本地恢复任务，不调用 API；原响应和原任务保留。':'已建立独立重试任务，待重试 '+r.selected+' 个分子；原队列进度保持不变。')+(r.skipped?' 已跳过 '+r.skipped+' 个已标注分子。':''));}
+action('resume',async()=>{
+ const job=state.job,model=$('model').value.trim(),payload={use_current_limits:true};
+ if(state.taskModel&&model!==state.taskModel){
+  if(!confirm(`将后续分子的模型从 ${state.taskModel} 切换为 ${model}，并继续原任务？已发过的请求保留各自的模型记录。`))return;
+  payload.switch_to_model=model;
+ }
+ await saveConfig();
+ await api('/api/auto/jobs/'+job+'/resume',payload);
+ await refresh();
+ message((payload.switch_to_model?'已切换到 '+model+'。':'')+'已从原进度继续处理后续分子。失败分子可单独重试。');
+});
+async function retry(job,itemId,mode='failed'){if(mode!=='local')await saveConfig();const body=itemId?{item_id:itemId}:{};if(mode!=='failed')body.mode=mode;const r=await api('/api/auto/jobs/'+job+'/retry',body);state.job=r.job_id;state.selectedItem=null;$('detail').hidden=true;$('analysis').hidden=true;await refresh();if(r.retry_in_place){message(r.selected?'正在重试 '+r.selected+' 个失败分子。要处理队列中的新分子，请在重试结束后点“继续后续分子”。'+(r.skipped?' 另有 '+r.skipped+' 个已由其他处理完成并跳过。':''):'没有需要重新提交的失败分子。');return;}message((r.selected===0?'这些分子都已在后续标注中处理，本次没有调用 API。':mode==='local'?'已建立本地恢复任务，不调用 API；原响应和原任务保留。':'已建立独立重试任务，待重试 '+r.selected+' 个分子；原队列进度保持不变。')+(r.skipped?' 已跳过 '+r.skipped+' 个已标注分子。':''));}
 async function renameJob(id){const job=state.jobs.find(j=>j.id===id);if(!job)return;const name=prompt('新的任务名称（最多100字）',jobLabel(job));if(name===null)return;if(!name.trim()){message('任务名称不能为空');return;}await api('/api/auto/jobs/'+id+'/rename',{name:name.trim()});await refresh();message('任务名称已更新。');}
 action('renameJob',()=>renameJob(state.job));
 action('retryFailed',()=>retry(state.job));
@@ -65,7 +75,7 @@ async function loadTiming(){const r=await api('/api/auto/timing');$('timingNote'
 action('timingLoad',loadTiming);
 function showPauseNotice(job){
  const q=job.current_request,waiting=job.state==='pausing';$('pauseNotice').hidden=!q&&!waiting;if(!q&&!waiting)return;
- let text=q?`${q.formula} · 已等待 ${Math.floor(q.elapsed_s/60)}分${Math.floor(q.elapsed_s%60)}秒；本次等待时限 ${q.timeout_s}秒。`:'正在保存当前请求结果。';
+ let text=q?`${q.formula}${q.model?' · '+q.model:''} · 已等待 ${Math.floor(q.elapsed_s/60)}分${Math.floor(q.elapsed_s%60)}秒；本次等待时限 ${q.timeout_s}秒。`:'正在保存当前请求结果。';
  if(q?.stream){const p=q.progress||{};text+=p.ttft_ms!=null?`已收到 ${p.chunks||0}个数据块。`:'正在等待接口首个输出。';
   if(p.reasoning_characters>0&&!p.content_characters)text+='模型正在思考，归属答案尚未开始返回；思考输出仍在接收。';}
  else if(q)text+='当前为非流式调用，完整结果返回前不会显示输出。';
@@ -73,7 +83,7 @@ function showPauseNotice(job){
  const requests=job.current_requests||[];if(requests.length>1)text+='\n其他正在分析：'+requests.slice(1).map(r=>r.formula+'（'+Math.floor(r.elapsed_s)+'秒）').join('、');
  $('pauseNotice').textContent=text;
 }
-async function refresh(){clearTimeout(state.poll);const params=new URLSearchParams();if(state.job)params.set('id',state.job);if($('resultFilter').value)params.set('result_state',$('resultFilter').value);const query=params.toString();const r=await api('/api/auto/jobs'+(query?'?'+query:''));const j=r.job;state.jobs=r.jobs;state.activeId=r.active_id;state.busy=!!r.active_id||['running','pausing'].includes(j?.state);$('renameJob').hidden=!j;
+async function refresh(){clearTimeout(state.poll);const params=new URLSearchParams();if(state.job)params.set('id',state.job);if($('resultFilter').value)params.set('result_state',$('resultFilter').value);const query=params.toString();const r=await api('/api/auto/jobs'+(query?'?'+query:''));const j=r.job;state.jobs=r.jobs;state.taskModel=j?.config.model??null;state.activeId=r.active_id;state.busy=!!r.active_id||['running','pausing'].includes(j?.state);$('renameJob').hidden=!j;
  $('jobs').innerHTML=r.jobs.map(x=>`<div class="job-row ${x.id===state.job?'selected':''}"><button data-job="${x.id}"><strong class="job-name">${esc(jobLabel(x))}</strong><small>${esc(names[x.state]||x.state)} · ${date(x.created_at)} · ${x.id.slice(0,8)}</small></button><button data-rename="${x.id}" class="rename-job" title="重命名任务" aria-label="重命名 ${esc(jobLabel(x))}">改名</button><button data-delete="${x.id}" class="delete-job" aria-label="删除任务记录 ${x.id.slice(0,8)}" title="删除任务记录，保留已入库归属" ${x.id===r.active_id||['running','pausing'].includes(x.state)?'disabled':''}>×</button></div>`).join('')||'<p class="hint">尚无任务记录。</p>';
  if(!j){state.job=null;$('jobTitle').textContent='标注进度';$('status').textContent='尚未运行';$('counters').innerHTML='';$('items').innerHTML='<tr><td colspan="5">尚无处理记录。</td></tr>';$('parallelStatus').textContent='';$('jobConfig').textContent='';$('jobError').textContent='';$('jobActionHint').textContent='';$('usageCards').innerHTML='';$('usageHint').textContent='';$('pauseNotice').hidden=true;for(const id of ['pause','resume','retryFailed','analyze'])$(id).hidden=true;$('start').disabled=state.busy;return;}
 state.job=j.id;state.status=j.state;$('status').textContent=names[j.state]||j.state;$('jobTitle').textContent=jobLabel(j);$('fullJobId').textContent=j.id;$('jobConfig').textContent=j.config.model+' · 实际任务输出上限 '+j.config.max_tokens+' · '+(j.config.thinking?'思考 '+(j.config.reasoning_effort||'high'):'非思考模式')+' · '+(j.config.wire_format||'verbose-v1')+' · '+(j.config.assignment_mode==='assisted'?'生产补全':'盲标')+' · '+(j.scope==='retry'?(j.config.retry_mode==='local'?'本地恢复 ':'有限重试 ')+j.config.retry_item_ids.length+' 个分子':'持续处理');
@@ -103,10 +113,11 @@ action('refresh',refresh);
 $('resultFilter').onchange=()=>refresh().catch(e=>message(e.message));
 action('analyze',async()=>{const r=await api('/api/auto/jobs/'+state.job+'/analyze',{}),pct=x=>x==null?'—':(x*100).toFixed(1)+'%';$('analysis').hidden=false;const available=r.metrics.some(m=>m.reference_peaks>0);$('analysisNote').textContent=(available?'':'本任务没有可独立对照的原库或人工归属，暂不能计算一致率。')+r.note+' 此操作不调用模型、不新增费用，也不修改归属。';$('metrics').innerHTML=available?r.metrics.map(m=>`<tr><td>${m.source==='manual'?'人工':'ShiftDB2'}</td><td>${m.nucleus==='all'?'H + C':m.nucleus}</td><td>${m.reference_peaks}</td><td>${pct(m.accuracy)}</td><td>${pct(m.coverage)}</td><td>${pct(m.top3_rate)}</td></tr>`).join(''):'<tr><td colspan="6">没有可对照标签；不能把 AI 自己的结果当作标准答案。</td></tr>';});
  $('items').onclick=async e=>{if(e.target.closest('a[href]')?.tagName==='A')return;const b=e.target.closest('[data-item]');if(!b)return;try{const r=await api('/api/auto/items/'+b.dataset.item);state.selectedItem={id:r.id,job_id:r.job_id};$('detail').hidden=false;$('detailTitle').textContent=r.formula+(r.state==='resolved'?' · 后续任务已完成':' · AI 归属');$('openMolecule').href='/?molecule_id='+r.molecule_id;$('structure').src='/api/molecule/'+r.molecule_id+'/svg';$('summary').textContent=r.output?.summary||(r.resolved_by?`原任务请求曾失败，已由后续任务“${r.resolved_by.name}”完成标注。原失败原因：${r.error||'未知'}`:r.error||'尚未返回');$('warnings').textContent=(r.output?.warnings||[]).join('\n')+((r.output?.consistency_issues||[]).length?'\n本地一致性检查：存在原子复用或分组问题，相关AI建议保留供查看，不自动补入确定归属。':'');
- const history=r.retry_history||[];$('retryHistoryBox').hidden=!history.length;$('retryHistoryTitle').textContent='此前失败尝试（'+history.length+'）';$('retryHistory').innerHTML=history.map(a=>`<p><strong>第 ${a.attempt_no} 次 · ${date(a.archived_at)}</strong>${a.elapsed!=null?' · '+a.elapsed.toFixed(1)+' 秒':''}<br>${esc(a.error||'未记录错误')}</p>`).join('');
+ const history=r.retry_history||[];$('retryHistoryBox').hidden=!history.length;$('retryHistoryTitle').textContent='此前失败尝试（'+history.length+'）';$('retryHistory').innerHTML=history.map(a=>`<p><strong>第 ${a.attempt_no} 次 · ${date(a.archived_at)}${a.request_config?.model?' · '+esc(a.request_config.model):''}</strong>${a.elapsed!=null?' · '+a.elapsed.toFixed(1)+' 秒':''}<br>${esc(a.error||'未记录错误')}</p>`).join('');
  const usage=r.usage||{},diag=r.diagnostics||{},reasoning=usage.completion_tokens_details?.reasoning_tokens;
  $('detailUsage').textContent='本次上限 '+(diag.max_tokens??r.request_config?.max_tokens??'未记录')+'；实际强度 '+(diag.reasoning_effort||'历史未单列')+'；终止原因 '+(diag.finish_reason||'未返回')+'；输入 '+(usage.prompt_tokens??'未返回')+'，生成 '+(usage.completion_tokens??'未返回')+' token'+(reasoning!=null?'，其中思考 '+reasoning+'、其余输出 '+(usage.completion_tokens-reasoning):'')+'。'+(diag.wire_characters!=null?' 紧凑输入 '+diag.wire_characters+' / 原表示 '+diag.input_characters+' 字符。':'')+(diag.response_reused_from?' 本地复用响应，未重新调用 API。':'');
  if(diag.failure_stage){const stages={dns:'解析地址',tcp_connect:'建立连接',proxy_tunnel:'代理隧道',tls_handshake:'TLS握手',request_write:'发送请求',response_headers:'等待响应',response_body:'接收答案'};$('detailUsage').textContent+=' 中断阶段：'+(stages[diag.failure_stage]||diag.failure_stage)+(diag.elapsed_s!=null?'，'+diag.elapsed_s.toFixed(1)+'秒':'')+'。'+(diag.application_send_started===false?'尚未发送归属请求。':'请求可能已发送，远端结果未确认。');}
+ if(r.request_config?.model)$('detailUsage').textContent='实际请求模型 '+r.request_config.model+' · '+$('detailUsage').textContent;
  $('retryOne').hidden=r.state!=='error';
  $('recoverOne').hidden=r.state!=='error'||r.raw_response?.diagnostics?.finish_reason!=='stop';
  $('retryIssues').hidden=r.state!=='done'||!r.output?.repair_targets?.length;

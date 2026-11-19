@@ -209,13 +209,16 @@ def build_record(record):
     mol, graph, groups, connectivity = graph_and_candidates(record['smiles'], record.get('structure', {}).get('atoms'))
     chosen, pair = select_spectra(record)
     if not any(chosen.values()):
-        raise ValueError('No eligible nonempty experimental spectrum')
+        raise ValueError('No eligible nonempty spectrum')
     output = {'schema_version': SCHEMA_VERSION, 'id': record['id'], 'origin': record.get('origin'),
+              'data_domain': record.get('export_classification', {}).get('spectrum_type', 'experimental'),
               'smiles_canonical': record['smiles'], 'molecular_formula': rdMolDescriptors.CalcMolFormula(mol),
               'connectivity_key': connectivity, 'molecular_graph': graph,
               'candidate_environments': {'carbon_groups': groups['carbon'], 'proton_environments': groups['proton']},
               'spectra': {}, 'conditions': {'by_nucleus': {}}, 'alignment_supervision': {}, 'branch_present': {},
               'provenance': {'molecule_revision': record.get('revision'), 'selected_spectrum_ids': {},
+                'spectrum_sources': {},
+                'assignment_coverage': record.get('export_classification', {}).get('coverage'),
                 'pair_id': pair['id'] if pair else None,
                 'pairing_basis': pair['basis'] if pair else 'unpaired_independent_experiments',
                 'same_known_solvent': bool(pair and pair['solvent_match'] == 'same_known'),
@@ -230,6 +233,9 @@ def build_record(record):
         output['conditions']['by_nucleus'][NUCLEI[branch]] = conditions_for(spec)
         output['branch_present'][branch] = bool(peaks)
         output['provenance']['selected_spectrum_ids'][branch] = spec['id'] if spec else None
+        output['provenance']['spectrum_sources'][branch] = (
+            {'source': spec.get('source'), 'spectrum_kind': spec.get('spectrum_kind','experimental'),
+             'source_record_id': (spec.get('provenance') or {}).get('source_record_id')} if spec else None)
     return output
 
 

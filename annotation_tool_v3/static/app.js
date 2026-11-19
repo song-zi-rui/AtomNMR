@@ -3,9 +3,11 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const labels = {complete_remaining:"部分归属",both_unassigned:"无归属",waiting_spectrum:"缺少实验谱",complete:"全归属",assigned:"唯一归属",equivalent_group:"等价组",overlap:"重叠",source_group:"原库多原子归属",ambiguous:"歧义",unassigned:"未归属",solvent:"溶剂峰",impurity:"杂质",excluded:"不计入"};
 const coverageLabels={full:'全归属',partial:'部分归属',none:'无归属'};
-const sourceLabel=source=>source==='literature_pdf'?'文献实验谱':source;
+const sourceLabel=source=>({literature_pdf:'文献实验谱',IBM_DFT:'IBM 模拟谱',
+  'CASCADE-DFT8K':'DFT8K 模拟谱','CASPRE-JEOL':'CASPRE · JEOL'}[source]||source);
 function coverageLabel(r){const total=(r.c_count||0)+(r.h_count||0),assigned=(r.c_assigned||0)+(r.h_assigned||0);return coverageLabels[r.annotation_coverage?.status||(assigned?(assigned===total?'full':'partial'):'none')];}
 labels.quality_hold="谱图已隔离";
+labels.simulation_only="仅模拟谱可用";
 const state = {record:null,nucleus:"13C",sid:null,pid:null,rows:[],offset:0,dirty:false,generation:0,saving:null,timer:null,loading:false,listRequest:0,navigating:null,anchor:null,anchorFilters:null,backStack:[]};
 const escape = value => String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(path,body,options={}){
@@ -49,7 +51,7 @@ async function loadList(reset=false){
   if(request!==state.listRequest)return;
   state.rows=result.rows;$("#pageNo").textContent=String(1+offset/40);$("#prevPage").disabled=offset===0;$("#nextPage").disabled=result.rows.length<40;
   const hints={recent:"按最近保存标注、备注或数据管理操作排序。",finished:"已结束分子；结束时当前实验谱自动设为完整，归属覆盖另行记录。",imported:"按首次入库时间倒序。"};
-  $("#searchHint").textContent=(selection.q&&$("#searchScope").value!=="filtered"?"全库检索：已忽略下方筛选。":hints[selection.view]||"结果受当前队列、来源与完成状态筛选。")+(result.total!=null?` 共 ${result.total.toLocaleString()} 个分子 ·`:"")+` 本页 ${result.rows.length} 条。`;
+  $("#searchHint").textContent=(selection.q&&$("#searchScope").value!=="filtered"?"全库检索：已忽略下方筛选。":hints[selection.view]||"未归属分子按已记录的氢谱裂分、J 值和积分优先排序。")+(result.total!=null?` 共 ${result.total.toLocaleString()} 个分子 ·`:"")+` 本页 ${result.rows.length} 条。`;
   $("#list").innerHTML=result.rows.length?result.rows.map(r=>`<button class="listitem ${state.record?.id===r.id?"active":""}" data-mid="${r.id}"><strong>${escape(r.formula)}</strong><span class="done-tag">${r.task_done?'本轮已结束':'尚未结束'}</span><small>C ${r.c_assigned}/${r.c_count} · H ${r.h_assigned}/${r.h_count}</small><small>${escape(coverageLabel(r))} · ${escape(labels[r.queue])===escape(coverageLabel(r))?'':escape(labels[r.queue])+' · '}${escape(r.origin)}</small><small>${selection.view==="imported"?"入库 "+dateLabel(r.created_at):r.last_processed_at?escape(activityLabel(r.last_action))+" · "+dateLabel(r.last_processed_at):""}</small><code>${escape(r.id)}</code><code>${escape(r.smiles)}</code></button>`).join(""):"<p class='hint'>当前筛选没有结果。输入编号时可选“全库检索”；查看已保存的分子可切换“最近处理”。</p>";
 }
 function recordCursor(record,selection){const view=selection.view||"";return [view,view==="imported"?record.created_at:["recent","finished"].includes(view)?record.activity?.last_processed_at||"":record.navigation_rank??({both_unassigned:0,complete_remaining:1,waiting_spectrum:2}[record.queue]??3),record.id];}
@@ -106,8 +108,9 @@ function peak(){return spectrum()?.peaks.find(p=>p.peak_id===state.pid);}
 function canEditMolecule(){return (state.record?.curation?.molecule_state||'active')==='active';}
 function canEditSpectrum(s=spectrum()){return canEditMolecule()&&!!s&&s.editable!==false&&(!s.manual_state||s.manual_state==='active')&&s.quality?.decision!=='quarantined';}
 function atomEligible(a){return !!a&&(state.nucleus==='13C'?a.symbol==='C':a.total_hydrogens>0||(peak()?.source_assignment_candidates||[]).includes(a.index));}
-function spectrumStateLabel(s){return s.quality?.decision==='quarantined'?'自动隔离 · 只读':({held:'暂时停用 · 不导出',excluded:'排除训练 · 不导出',reference:(s.version_label||'参考版本')+' · 只读 / 不导出',superseded:(s.version_label||'参考版本')+' · 只读 / 不导出'}[s.manual_state]||(!canEditMolecule()?'分子已停用 · 只读':s.version_info?'当前数据集 · 最终版':'当前数据集 · 原始谱'));}
-function spectrumOrder(a,b){return Number(!canEditSpectrum(a))-Number(!canEditSpectrum(b))||Number(!a.version_info)-Number(!b.version_info)||(b.version_info?.number||0)-(a.version_info?.number||0);}
+function isComputed(s){return s?.spectrum_kind==='computed';}
+function spectrumStateLabel(s){if(isComputed(s))return '计算位移';return s.quality?.decision==='quarantined'?'自动隔离 · 只读':({held:'暂时停用 · 不导出',excluded:'排除训练 · 不导出',reference:(s.version_label||'参考版本')+' · 只读 / 不导出',superseded:(s.version_label||'参考版本')+' · 只读 / 不导出'}[s.manual_state]||(!canEditMolecule()?'分子已停用 · 只读':s.version_info?'当前数据集 · 最终版':'当前数据集 · 原始谱'));}
+function spectrumOrder(a,b){return Number(isComputed(a))-Number(isComputed(b))||Number(!canEditSpectrum(a))-Number(!canEditSpectrum(b))||Number(!a.version_info)-Number(!b.version_info)||(b.version_info?.number||0)-(a.version_info?.number||0);}
 function renderStructureNotice(){
   const r=state.record,metals=r?.structure.metal_atoms||[];
   $('#structureView').hidden=!metals.length;$('#complexNotice').hidden=!metals.length;
@@ -173,7 +176,7 @@ async function performSave(done){
       void loadList().catch(error=>toast("归属已保存，但列表刷新失败："+error.message));
     }
   }catch(error){$("#saveState").textContent=error.deliveryUnknown?"保存结果未确认 · 修改仍保留，请勿关闭或刷新":"保存失败 · 修改仍在当前页面，请勿关闭或刷新";throw error;}
-  finally{$("#save").disabled=false;$("#complete").disabled=false;}
+  finally{$("#save").disabled=false;$("#complete").disabled=state.record?.queue==='simulation_only';}
 }
 async function save(done=false){
   clearTimeout(state.timer);
@@ -190,29 +193,104 @@ async function openRecord(id,remember=true,historyOffset=state.offset){if(state.
 function renderHeader(){
   const r=state.record;if(!r)return;
   $("#formula").textContent=r.formula;$("#recordId").textContent=r.id;
-  $("#recordBadges").innerHTML=`<span class="badge">${escape(sourceLabel(r.origin))}</span><span class="badge" title="按已保存的归属状态统计，不代表正确性认证">${escape(coverageLabel(r))}</span><span class="badge">${r.task_done?'本轮标注已结束':'尚未结束本轮标注'}</span>`;
+  $("#recordBadges").innerHTML=`<span class="badge">${escape(sourceLabel(r.origin))}</span>`+(r.queue==='simulation_only'
+    ?'<span class="badge">仅模拟谱可用</span>'
+    :`<span class="badge" title="按已保存的实验谱归属状态统计">${escape(coverageLabel(r))}</span><span class="badge">${r.task_done?'本轮标注已结束':'尚未结束本轮标注'}</span>`);
   if(r.ai_history?.length)$('#recordBadges').innerHTML+=`<a class="badge" href="/auto.html?molecule_id=${r.id}" target="_blank" rel="noopener">查看 AI 归属记录 · ${escape([...new Set(r.ai_history.map(x=>x.model))].join(' / '))}</a>`;
   if(window.renderCurationSummary)window.renderCurationSummary(r);
 }
 function renderStructure(){const r=state.record;if(!r)return;const selected=peak()?.assignment.atom_indices||[];$("#molecule").src="/api/molecule/"+r.id+"/svg?"+new URLSearchParams({atoms:selected.join(","),view:$("#structureView").value||"auto"});renderStructureNotice();$("#smiles").textContent=r.smiles;$("#atoms").innerHTML=r.structure.atoms.filter(a=>a.symbol!=="H").map(a=>{const eligible=atomEligible(a);return `<button data-atom="${a.index}" class="${selected.includes(a.index)?"selected":""} ${eligible?"":"disabled"}" ${!eligible||!canEditSpectrum()?"disabled":""} title="${escape(a.symbol)}${a.index} · 连氢数 ${a.total_hydrogens} · 邻接 ${a.neighbors.join(",")}">${escape(a.symbol)}${a.index}</button>`;}).join("");const groups=r.structure.equivalent_groups.filter(g=>g.every(i=>state.nucleus==="13C"?r.structure.atoms[i].symbol==="C":r.structure.atoms[i].total_hydrogens>0));$("#groups").innerHTML=groups.length?"结构对称组提示（不自动证明化学等价）：<br>"+groups.map(g=>`<button data-group="${g.join(",")}" ${!canEditSpectrum()?"disabled":""}>${g.map(i=>escape(r.structure.atoms[i].symbol)+i).join(" / ")}</button>`).join(""):"该核种没有多原子的结构对称组提示。";renderEditor();}
-let selectedSpectra={recordId:null,ids:{}};
+let selectedSpectra={recordId:null,ids:{},comparison:{}};
+function spectrumOptionName(s,index){
+  const conditions=isComputed(s)?[s.provenance?.source_record_id,s.provenance?.frame_count?
+    s.provenance.frame_count+' 帧均值':'逐原子计算'].filter(Boolean).join(' · ')
+    :`${s.solvent||'溶剂未知'} · ${s.frequency_mhz?`${s.frequency_mhz} MHz`:'频率未知'}`;
+  return `${index+1}. ${isComputed(s)?'':'实验 · '}${sourceLabel(s.source)} · ${conditions} · ${s.peaks.length} 信号 · ${spectrumStateLabel(s)}`;
+}
+function comparisonChoices(){return state.record?.spectra.filter(s=>s.nucleus===state.nucleus).sort(spectrumOrder)||[];}
+function targetText(p){
+  if(p.source_atom_ids?.length&&!p.assignment.atom_indices.length)return '源 '+p.source_atom_ids.join(', ');
+  return p.assignment.atom_indices.map(i=>state.record.structure.atoms[i]?.symbol+i).join(', ')||'—';
+}
+function peakStatus(s,p){
+  const a=p.assignment;
+  return isComputed(s)&&!a.atom_indices.length?'主库编号待核对':labels[a.status]||a.status;
+}
+function computedNotice(s){
+  if(!isComputed(s))return '';
+  if(s.provenance?.structure_match==='tautomer_variant')return 'IBM 互变异构体，仅供对照。标出的编号来自 IBM 原结构。';
+  const origin=s.source==='IBM_DFT'?'IBM ':s.source==='CASCADE-DFT8K'?'DFT8K ':'';
+  return s.provenance?.atom_mapping_status==='source_indices_only'?('主库编号待核对，峰表显示 '+origin+'原始原子编号。'):'';
+}
+function shiftDetails(p){
+  return [p.multiplicity,p.reported_nH!=null?p.reported_nH+'H':'',p.j_values?.length?'J '+p.j_values.join(', ')+' Hz':''].filter(Boolean).join(' · ');
+}
+function renderSpectrumComparison(choices){
+  const button=$('#compareSpectra'),options=$('#spectrumCompareOptions'),group=$('#spectrumComparison');
+  if(!button||!options||!group)return;
+  const selection=selectedSpectra.comparison[state.nucleus];
+  const open=choices.length>1&&!!selection?.open;
+  const peers=open?choices.filter(s=>s.id!==state.sid&&selection.ids.has(s.id)):[];
+  button.hidden=choices.length<2;
+  button.textContent=open?'收起对比':'并排对比';
+  button.setAttribute('aria-expanded',String(open));
+  options.hidden=!open;
+  options.innerHTML=open?choices.map((s,i)=>`<label><input type="checkbox" data-compare-spectrum="${escape(s.id)}" ${s.id===state.sid||selection.ids.has(s.id)?'checked':''} ${s.id===state.sid?'disabled':''}><span>${escape(spectrumOptionName(s,i))}${s.id===state.sid?'（当前）':''}</span></label>`).join(''):'';
+  group.classList.toggle('comparing',peers.length>0);
+  const heading=$('#comparisonPrimaryTitle'),tables=$('#comparisonTables');
+  heading.hidden=!peers.length;
+  if(peers.length)heading.textContent='当前 · '+spectrumOptionName(spectrum(),choices.findIndex(s=>s.id===state.sid));
+  tables.hidden=!peers.length;
+  tables.innerHTML=peers.map(s=>`<section class="spectrum-compare-card">
+    <h3>${escape(spectrumOptionName(s,choices.indexOf(s)))}</h3>
+    ${computedNotice(s)?`<p class="hint">${escape(computedNotice(s))}</p>`:''}
+    <div class="tablewrap"><table><thead><tr><th>δ / ppm</th><th>归属原子</th><th>状态</th></tr></thead><tbody>
+    ${s.peaks.map(p=>`<tr><td class="shift">${escape(p.shift_ppm)}<small>${escape(shiftDetails(p))}</small></td><td class="target">${escape(targetText(p))}</td><td class="${escape(p.assignment.status)}">${escape(peakStatus(s,p))}</td></tr>`).join('')}</tbody></table></div>
+    <button data-focus-spectrum="${escape(s.id)}">设为当前谱</button></section>`).join('');
+}
+function switchSpectrum(id){
+  const comparison=selectedSpectra.comparison[state.nucleus];
+  if(comparison?.open&&state.sid){comparison.ids.add(state.sid);comparison.ids.add(id);}
+  state.sid=id;state.pid=null;$('#atomNumber').value='';renderSpectra();
+}
 function renderSpectra(){
   const r=state.record;if(!r)return;
-  if(selectedSpectra.recordId!==r.id)selectedSpectra={recordId:r.id,ids:{}};
+  if(selectedSpectra.recordId!==r.id)selectedSpectra={recordId:r.id,ids:{},comparison:{}};
   $$('[data-nuc]').forEach(b=>{b.classList.toggle("active",b.dataset.nuc===state.nucleus);b.setAttribute("aria-selected",String(b.dataset.nuc===state.nucleus));});
-  const choices=r.spectra.filter(s=>s.nucleus===state.nucleus).sort(spectrumOrder);
+  const choices=comparisonChoices();
   if(!choices.some(s=>s.id===state.sid))state.sid=choices.find(s=>s.id===selectedSpectra.ids[state.nucleus])?.id||choices[0]?.id;
   if(state.sid)selectedSpectra.ids[state.nucleus]=state.sid;
-  $("#spectrum").innerHTML=choices.map((s,i)=>`<option value="${s.id}">${i+1}. ${escape(sourceLabel(s.source))} · ${escape(s.solvent||"溶剂未知")} · ${s.frequency_mhz??"频率未知"}${s.frequency_mhz?" MHz":""} · ${s.peaks.length} 信号 · ${escape(spectrumStateLabel(s))}</option>`).join("")||"<option>没有这类实验谱</option>";
+  $("#spectrum").innerHTML=choices.map((s,i)=>`<option value="${escape(s.id)}">${escape(spectrumOptionName(s,i))}</option>`).join("")||'<option value="">没有该核种的谱</option>';
   $("#spectrum").value=state.sid||"";
+  renderSpectrumComparison(choices);
   const s=spectrum();
-  if(!s){$("#peaks").innerHTML="";$("#sourceDetails").textContent="";$("#solventReference").textContent="";state.pid=null;window.renderNumberingNotice?.();window.renderSpectrumCuration?.();renderStructure();return;}
-  if(window.NMRReference)window.NMRReference.render($("#solventReference"),{conditions:{by_nucleus:{[state.nucleus]:{solvent_raw:s.conditions.solvent_raw||s.solvent}}},spectra:{[state.nucleus]:{peaks:s.peaks}}},state.nucleus);
+  const notice=$('#computedSpectrumNotice');
+  notice.textContent=computedNotice(s);
+  notice.hidden=!notice.textContent;
+  $("#solventReference").textContent="";
+  if(!s){$("#peaks").innerHTML="";$("#sourceDetails").textContent="";$('#assignmentWarning')?.remove?.();state.pid=null;window.renderNumberingNotice?.();window.renderSpectrumCuration?.();renderStructure();return;}
+  if(!isComputed(s)&&window.NMRReference)window.NMRReference.render($("#solventReference"),{conditions:{by_nucleus:{[state.nucleus]:{solvent_raw:s.conditions.solvent_raw||s.solvent}}},spectra:{[state.nucleus]:{peaks:s.peaks}}},state.nucleus);
   renderPeaks();window.renderSpectrumCuration?.();
+  if(isComputed(s)||s.source==='CASPRE-JEOL'){
+    const p=s.provenance||{};
+    const details=[sourceLabel(s.source),p.source_record_id?'记录 '+p.source_record_id:null,
+      p.source_sdf_record_1based?'SDF 第 '+p.source_sdf_record_1based+' 条':null,
+      p.frame_count?p.frame_count+' 帧计算位移均值':null,p.chemical_shift_reference?p.chemical_shift_reference+' 参照':null,
+      p.compound_name].filter(Boolean).join(' · ');
+    const url=/^https:\/\//.test(p.source_url||'')?p.source_url:'';
+    $('#sourceDetails').innerHTML=`<p>${escape(details)}</p><p>${escape(p.atom_mapping_note||'')}</p><p>来源 SMILES <code>${escape(p.source_smiles||'')}</code></p>${url?`<p><a href="${escape(url)}" target="_blank" rel="noopener">查看数据来源 ↗</a></p>`:''}`;
+    renderStructure();
+    return;
+  }
   const source=s.provenance;const doi=source.doi;
   $("#sourceDetails").innerHTML=(doi?`<a href="https://doi.org/${encodeURIComponent(doi).replace(/%2F/g,"/")}" target="_blank" rel="noopener">${escape(doi)}</a>`:"")+`<p>${escape(source.source_shard||source.source_file||"")} · ${source.source_row_index!==undefined?"原表行 "+source.source_row_index+"（从 0 开始）":"源记录 "+escape(source.source_record_index||"")}</p>`+(source.original_row?`<p>页码口径：筛选后 NMR 页面索引，不是原 SI 页码。原值 ${escape(source.original_row.Page_in_file_para)}</p><pre>${escape(source.original_row.NMR_shift_text||"")}</pre>`:`<p>ShiftDB2 ID：${escape(source.nmrshiftdb2_id||"")} · ${escape(source.spectrum_field||"")}</p><pre>${escape(s.peaks.map(p=>p.raw_signal||"").join(" | "))}</pre>`);
   const citations=s.source==='literature_pdf'?[source]:[];
   if(s.source==='literature_pdf')$("#sourceDetails").replaceChildren();
+  const review=s.quality?.source_review;
+  if(review){
+    const link=`https://doi.org/${encodeURIComponent(review.supplement_doi).replace(/%2F/g,'/')}`;
+    $("#sourceDetails").insertAdjacentHTML('beforeend',`<p>已核对论文补充材料第 ${escape(review.pages.join('–'))} 页的化合物 ${escape(review.compound)}，实验谱已恢复使用。 <a href="${link}" target="_blank" rel="noopener">查看补充材料 ↗</a></p>`);
+  }
   for(const citation of citations.concat(source.literature_assignment_sources || [])){
     const pages=citation.pdf_pages?.join('、')||citation.pdf_page;
     const detail=[citation.pdf,pages?`第 ${pages} 页`:'',citation.table?`表 ${citation.table}`:''].filter(Boolean).join(' · ');
@@ -240,7 +318,7 @@ function spectrumListText(s){
     return shift+(details.length?' ('+details.join(', ')+')':'');
   }).join(', ');
 }
-function spectraCopyText(){return '碳谱列表为：'+spectrumListText(spectrumForCopy('13C'))+'\n氢谱列表为：'+spectrumListText(spectrumForCopy('1H'));}
+function spectraCopyText(){return [['13C','碳谱'],['1H','氢谱']].map(([nuc,name])=>{const s=spectrumForCopy(nuc);return name+(isComputed(s)?'（'+sourceLabel(s.source)+'）':'')+'列表为：'+spectrumListText(s);}).join('\n');}
 async function copySpectra(){
   if(!state.record)return toast('请先选择一个分子。');
   const text=spectraCopyText();
@@ -267,13 +345,14 @@ function renderPeaks(){
   }
   $("#peaks").innerHTML=s.peaks.map(p=>{
     const a=p.assignment;
-    const annotationOrigin=String(a.origin||'').startsWith('ai:')?'AI · '+(a.ai?.response_model||a.ai?.model||String(a.origin).slice(12)):a.origin==='nmrshiftdb2'?'原库归属':a.origin?'人工标注':'';
-    const atoms=a.atom_indices.map(i=>state.record.structure.atoms[i]?.symbol+i).join(", ");
-    const detail=[p.multiplicity,p.reported_nH!=null?p.reported_nH+"H":"",p.j_values?.length?"J "+p.j_values.join(", ")+" Hz":""].filter(Boolean).join(" · ");
+    const annotationOrigin=isComputed(s)?'计算归属':String(a.origin||'').startsWith('ai:')?'AI · '+(a.ai?.response_model||a.ai?.model||String(a.origin).slice(12)):a.origin==='CASPRE-JEOL'?'CASPRE 来源归属':a.origin==='nmrshiftdb2'?'原库归属':a.origin?'人工标注':'';
+    const atoms=targetText(p);
+    const detail=shiftDetails(p);
     const fragments=p.source_assignment_fragments||[];
     const references=fragments.flatMap(f=>f.assignments.map(x=>`${x.source_assignment_id} → ${x.display_atom_label||'无法映射'}${x.transfer_status==='mapped'?'':'（冲突）'}`));
     const warning=validation&&validation.status!=='identity_validated'?`<small title="${escape(references.join('; '))}" style="color:#9b401b">源归属待核实${a.origin==='manual'?' · 当前为人工标注':''}</small>`:'';
-    return `<tr data-peak="${p.peak_id}" tabindex="0" class="${p.peak_id===state.pid?"active":""}"><td>${escape(p.peak_id)}</td><td class="shift">${p.shift_ppm}<small>${p.range_min!==undefined&&p.range_min!==p.range_max?`${p.range_min}–${p.range_max}`:""}</small></td><td class="detail">${escape(detail||"未报告")}<small>${p.source_signal_code?"原库编码 "+escape(p.source_signal_code):""}</small></td><td class="target">${escape(atoms||"—")}<small title="${escape(a.ai?'任务 '+a.ai.job_id+' · '+a.ai.created_at:'')}">${escape(annotationOrigin)}</small>${warning}${p.source_assignment_note?`<small title="${escape(p.source_assignment_note)}">原库指向 ${escape((p.source_assignment_candidates||[]).map(i=>state.record.structure.atoms[i].symbol+i).join(" / "))} · 氢数需核对</small>`:""}</td><td class="${a.status}">${escape(labels[a.status]||a.status)}</td></tr>`;
+    const label=peakStatus(s,p);
+    return `<tr data-peak="${p.peak_id}" tabindex="0" class="${p.peak_id===state.pid?"active":""}"><td>${escape(p.peak_id)}</td><td class="shift">${p.shift_ppm}<small>${p.range_min!==undefined&&p.range_min!==p.range_max?`${p.range_min}–${p.range_max}`:""}</small><small class="compare-peak-detail">${escape(detail)}</small></td><td class="detail">${escape(detail||(isComputed(s)?'计算均值':'未报告'))}<small>${p.source_signal_code?"原库编码 "+escape(p.source_signal_code):""}</small></td><td class="target">${escape(atoms)}<small title="${escape(a.ai?'任务 '+a.ai.job_id+' · '+a.ai.created_at:'')}">${escape(annotationOrigin)}</small>${warning}${p.source_assignment_note?`<small title="${escape(p.source_assignment_note)}">原库指向 ${escape((p.source_assignment_candidates||[]).map(i=>state.record.structure.atoms[i].symbol+i).join(" / "))} · 氢数需核对</small>`:""}</td><td class="${a.status}">${escape(label)}</td></tr>`;
   }).join("");
 }
 function selectPeak(pid){$("#atomNumber").value="";state.pid=pid;renderPeaks();renderStructure();}
@@ -330,12 +409,34 @@ $("#collapse").onclick=()=>{$(".shell").classList.toggle("collapsed");localStora
 $("#list").onclick=e=>{const b=e.target.closest("[data-mid]");if(b&&!state.navigating)openRecord(b.dataset.mid).catch(x=>toast(x.message));};
 let searchTimer;$("#search").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};
 $("#search").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();clearTimeout(searchTimer);loadList(true).catch(x=>toast(x.message));}};
-["#queue","#origin","#coverage","#searchScope","#annotationSource"].forEach(id=>{if($(id))$(id).onchange=()=>loadList(true).catch(e=>toast(e.message));});
+["#queue","#origin","#coverage","#searchScope","#annotationSource"].forEach(id=>{if($(id))$(id).onchange=()=>{
+  if(id==='#origin'&&['IBM_DFT','CASCADE-DFT8K','CASPRE-JEOL'].includes($(id).value)){$('#queue').value='';$('#processing').value='all';}
+  loadList(true).catch(e=>toast(e.message));
+};});
 $('#processing').onchange=()=>{if($('#view').value==='finished'&&$('#processing').value!=='finished')$('#view').value='';loadList(true).catch(e=>toast(e.message));};
 $("#view").onchange=()=>{clearTimeout(searchTimer);$("#search").value="";$("#queue").value="";$("#origin").value="";$('#coverage').value='';$('#processing').value=$('#view').value==='finished'?'finished':'all';loadList(true).catch(e=>toast(e.message));};
 $("#refreshList").onclick=()=>loadList(true).catch(e=>toast(e.message));
 $("#prevPage").onclick=()=>{state.offset=Math.max(0,state.offset-40);loadList().catch(e=>toast(e.message));};$("#nextPage").onclick=()=>{state.offset+=40;loadList().catch(e=>toast(e.message));};
-$$('[data-nuc]').forEach(b=>b.onclick=()=>{state.nucleus=b.dataset.nuc;state.pid=null;$("#atomNumber").value="";renderSpectra();});$("#spectrum").onchange=()=>{state.sid=$("#spectrum").value;state.pid=null;$("#atomNumber").value="";renderSpectra();};
+$$('[data-nuc]').forEach(b=>b.onclick=()=>{state.nucleus=b.dataset.nuc;state.pid=null;$("#atomNumber").value="";renderSpectra();});$("#spectrum").onchange=()=>switchSpectrum($("#spectrum").value);
+if($('#compareSpectra'))$('#compareSpectra').onclick=()=>{
+  const choices=comparisonChoices();
+  if(choices.length<2)return;
+  const next=choices.find(s=>s.id!==state.sid&&isComputed(s)!==isComputed(spectrum()))||choices.find(s=>s.id!==state.sid);
+  const selection=selectedSpectra.comparison[state.nucleus]??={open:false,ids:new Set([state.sid,next.id])};
+  selection.open=!selection.open;
+  renderSpectrumComparison(choices);
+};
+if($('#spectrumCompareOptions'))$('#spectrumCompareOptions').onchange=e=>{
+  const id=e.target.dataset.compareSpectrum,selection=selectedSpectra.comparison[state.nucleus];
+  if(!id||id===state.sid||!selection?.open)return;
+  if(e.target.checked)selection.ids.add(id);else selection.ids.delete(id);
+  renderSpectrumComparison(comparisonChoices());
+  $('#spectrumCompareOptions').querySelector(`[data-compare-spectrum="${id}"]`)?.focus();
+};
+if($('#comparisonTables'))$('#comparisonTables').onclick=e=>{
+  const id=e.target.closest('[data-focus-spectrum]')?.dataset.focusSpectrum;
+  if(id)switchSpectrum(id);
+};
 $("#peaks").onclick=e=>{const row=e.target.closest("[data-peak]");if(row)selectPeak(row.dataset.peak);};$("#peaks").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();if($("#atomNumber").value){e.stopPropagation();commitAtomNumber();return;}const row=e.target.closest("[data-peak]");if(row)selectPeak(row.dataset.peak);}};
 $("#atoms").onclick=e=>{const b=e.target.closest("[data-atom]");if(b)changeAtoms([Number(b.dataset.atom)]);};$("#groups").onclick=e=>{const b=e.target.closest("[data-group]");if(b)changeAtoms(b.dataset.group.split(",").map(Number),true);};
 $("#status").onchange=()=>{const p=peak();if(!p||!canEditSpectrum()||p.assignment_group)return;p.assignment.status=$("#status").value;if(["unassigned","solvent","impurity","excluded"].includes(p.assignment.status))p.assignment.atom_indices=[];p.assignment.origin="manual";p._dirty=true;dirty(p);renderPeaks();renderStructure();};

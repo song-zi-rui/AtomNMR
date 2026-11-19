@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from . import core as db, ai_annotation as ai, ai_database, ai_parallel, ai_duration
 
+QUEUE_ORDER_POLICY = 'unlabeled_h_info_first_v2'
 
 def migrate_retry_sources(c):
     changed=0
@@ -63,13 +64,15 @@ def initialize(c):
     c.execute('CREATE INDEX IF NOT EXISTS auto_item_molecule_state ON auto_items(molecule_id,state,id)')
     c.execute("""CREATE INDEX IF NOT EXISTS auto_item_applied_recent ON auto_items(job_id,updated_at DESC,id DESC)
         WHERE state='done' AND json_extract(publication_json,'$.applied')>0""")
-    for row in c.execute("SELECT id,config_json FROM auto_jobs WHERE scope='pending' AND state!='completed'").fetchall():
+    for row in c.execute("SELECT id,scope,phase,cursor,config_json FROM auto_jobs WHERE scope IN ('pending','unlabeled') AND state!='completed'").fetchall():
         config=json.loads(row['config_json'])
-        if config.get('queue_order_policy')!='unlabeled_first_v1':
-            config['queue_order_policy']='unlabeled_first_v1'
-            # Old cursors belong to the opposite phase order; revisit the queue,
-            # retaining every existing item/result so no work is repeated.
-            c.execute("UPDATE auto_jobs SET phase=0,cursor='',config_json=? WHERE id=?",(db.dumps(config),row['id']))
+        if config.get('queue_order_policy')!=QUEUE_ORDER_POLICY:
+            keep_partial = config.get('queue_order_policy')=='unlabeled_first_v1' and row['scope']=='pending' and row['phase']>0
+            config['queue_order_policy']=QUEUE_ORDER_POLICY
+            # The previous ID cursor in the unassigned phase had a different
+            # order. Existing items and published results still suppress repeats.
+            c.execute('UPDATE auto_jobs SET phase=?,cursor=?,config_json=? WHERE id=?',
+                      (row['phase'] if keep_partial else 0, row['cursor'] if keep_partial else '', db.dumps(config),row['id']))
     migrate_retry_sources(c)
     ai.response_columns(c,'auto_items')
     if 'usage_totals_json' not in columns:
@@ -112,7 +115,7 @@ class Service:
         return result
 
     def config(self):
-        return ai.snapshot_config(self.manager.settings()) | self.execution() | {'queue_order_policy':'unlabeled_first_v1'}
+        return ai.snapshot_config(self.manager.settings()) | self.execution() | {'queue_order_policy':QUEUE_ORDER_POLICY}
 
     @staticmethod
     def job_name(name):
@@ -240,7 +243,7 @@ class Service:
         # responses are archived/published before the job becomes paused.
         return {'state':'pausing','pause_mode':'drain_inflight'}
 
-    def resume(self,identifier,use_current_limits=False):
+    def resume(self,identifier,use_current_limits=False,*,switch_to_model=None):
         with self.manager.lock:
             if self.manager.active:raise RuntimeError('已有运行中的自动任务')
             self.manager.key()
@@ -250,9 +253,11 @@ class Service:
                 if row['state']=='completed':raise ValueError('此任务已处理完所选队列；可另开任务检查新入库数据')
                 if use_current_limits:
                     old=json.loads(row['config_json']);current=self.config()
-                    if any(current[k]!=old[k] for k in ('model','thinking')):
-                        raise ValueError('恢复原任务只调整 token 和超时；请保持模型及思考开关一致，换模型请新建任务')
-                    keys=('max_tokens','timeout','reasoning_effort','wire_format','assignment_mode','policy','system_prompt','prompt_sha256','base_url','api_adapter','json_mode','stream','provider','tls_policy','ca_file','ca_sha256','tls_origin','parallelism','parallel_strategy')
+                    if switch_to_model is not None and current['model']!=switch_to_model:
+                        raise ValueError('当前模型已变化，请刷新后重新确认任务使用的模型')
+                    if current['thinking']!=old['thinking'] or (current['model']!=old['model'] and switch_to_model is None):
+                        raise ValueError('恢复原任务请保持模型及思考开关一致；更换模型时请在继续前确认，修改思考开关请新建任务')
+                    keys=('model','max_tokens','timeout','reasoning_effort','wire_format','assignment_mode','policy','system_prompt','prompt_sha256','base_url','api_adapter','json_mode','stream','provider','tls_policy','ca_file','ca_sha256','tls_origin','parallelism','parallel_strategy')
                     updated=dict(old)
                     if any(current[k]!=old.get(k) for k in keys):
                         # Preserve old request settings before revising future limits.
@@ -272,6 +277,13 @@ class Service:
                                 'old':previous_cap,'new':updated['provider_parallelism_cap'],'reason':'复查任务并发策略调整'}]
                     if updated!=old:
                         c.execute('UPDATE auto_jobs SET config_json=? WHERE id=?',(db.dumps(updated),identifier))
+                    if updated['model']!=old['model']:
+                        # An interrupted retry can have saved settings without an issued request.
+                        for item in c.execute("""SELECT id,request_config_json FROM auto_items
+                            WHERE job_id=? AND state='pending' AND request_config_json IS NOT NULL""",(identifier,)).fetchall():
+                            request=json.loads(item['request_config_json'])
+                            request.update({k:updated[k] for k in keys})
+                            c.execute('UPDATE auto_items SET request_config_json=? WHERE id=?',(db.dumps(request),item['id']))
                 c.execute("UPDATE auto_jobs SET state='running',error=NULL,updated_at=? WHERE id=?",(db.now(),identifier));c.commit()
             self.manager.active=identifier;self.manager.cancel.clear()
         self.manager.pool.submit(self.work,identifier)
@@ -285,9 +297,21 @@ class Service:
         model=json.loads(job['config_json'])['model']
         with closing(db.connect(self.main_path,timeout=2)) as c:
             while phase<len(phases):
-                rows=c.execute('''SELECT id FROM molecules WHERE queue=? AND id>? AND task_done=0
-                    AND NOT EXISTS(SELECT 1 FROM ai_annotation_results r WHERE r.molecule_id=molecules.id AND r.model=?)
-                    ORDER BY id LIMIT 32''',(phases[phase],cursor,model)).fetchall()
+                queue=phases[phase]
+                if queue=='both_unassigned':
+                    sort=db.NAVIGATION_ORDER
+                    value, last_id = json.loads(cursor) if cursor else (db.PROTON_ORDER_BASE, '')
+                    sql=f'''SELECT id,({sort}) AS priority_key FROM molecules INDEXED BY molecule_pending_proton_order
+                        WHERE queue='both_unassigned' AND task_done=0
+                        AND NOT EXISTS(SELECT 1 FROM ai_annotation_results r WHERE r.molecule_id=molecules.id AND r.model=?)'''
+                    rows=c.execute(sql+f' AND ({sort})=? AND id>? ORDER BY id LIMIT 32', (model,value,last_id)).fetchall()
+                    if len(rows)<32:
+                        rows+=c.execute(sql+f' AND ({sort})>? AND ({sort})<? ORDER BY ({sort}),id LIMIT ?',
+                            (model,value,db.PROTON_ORDER_BASE+db.PROTON_ORDER_STRIDE,32-len(rows))).fetchall()
+                else:
+                    rows=c.execute('''SELECT id FROM molecules WHERE queue=? AND id>? AND task_done=0
+                        AND NOT EXISTS(SELECT 1 FROM ai_annotation_results r WHERE r.molecule_id=molecules.id AND r.model=?)
+                        ORDER BY id LIMIT 32''',(queue,cursor,model)).fetchall()
                 if not rows:
                     phase+=1;cursor=''
                     with closing(ai.store(self.path)) as out:
@@ -295,7 +319,7 @@ class Service:
                     continue
                 for row in rows:
                     if self.manager.cancel.is_set():return None
-                    mid=row['id'];cursor=mid
+                    mid=row['id'];cursor=db.dumps([row['priority_key'],mid]) if queue=='both_unassigned' else mid
                     try:
                         c.execute('BEGIN')
                         record=db.record(c,mid,require_quality=True)
@@ -413,24 +437,25 @@ class Service:
                           (message,db.dumps(failure_usage),db.dumps(failure_diagnostics),time.monotonic()-started,db.now(),item['id']));c.commit()
             return exc
 
-    def work(self,identifier):
+    def work(self,identifier,*,retry_ids=(),retry_config=None,retry_end_state='paused'):
         final,error,streak='paused',None,0
         inflight={};exhausted=False;halt=False;cooldown_until=0.0
+        item_scope=' AND id IN (SELECT value FROM json_each(?))' if retry_ids else ''
+        scope_args=(db.dumps(retry_ids),) if retry_ids else ()
         pool=ThreadPoolExecutor(max_workers=ai_parallel.MAX_WORKERS,thread_name_prefix='nmr-molecule')
         try:
-            with closing(ai.store(self.path)) as c:
-                job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
-                config=json.loads(job['config_json'])
             while True:
                 with closing(ai.store(self.path)) as c:
                     config=json.loads(c.execute('SELECT config_json FROM auto_jobs WHERE id=?',(identifier,)).fetchone()[0])
+                if retry_config is not None:
+                    config=retry_config
                 limit=self.capacity(config)['effective_parallelism']
                 while not halt and not self.manager.cancel.is_set() and time.monotonic()>=cooldown_until:
                     with closing(ai.store(self.path)) as c:
                         job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
                         excluded=tuple(inflight.values())
                         exclusion=(' AND id NOT IN ('+','.join('?' for _ in excluded)+')') if excluded else ''
-                        item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state IN ('responded','received')"+exclusion+' ORDER BY id LIMIT 1',(identifier,*excluded)).fetchone()
+                        item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state IN ('responded','received')"+item_scope+exclusion+' ORDER BY id LIMIT 1',(identifier,*scope_args,*excluded)).fetchone()
                     if item and item['state']=='received':
                         self._publish(item,config);continue
                     if item:
@@ -439,9 +464,9 @@ class Service:
                         limit=self.capacity(config)['effective_parallelism']
                         if len(inflight)>=limit:break
                         with closing(ai.store(self.path)) as c:
-                            item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state='pending'"+exclusion+' ORDER BY id LIMIT 1',(identifier,*excluded)).fetchone()
+                            item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state='pending'"+item_scope+exclusion+' ORDER BY id LIMIT 1',(identifier,*scope_args,*excluded)).fetchone()
                         if not item and not exhausted:
-                            item=self._next(job)
+                            item=None if retry_ids else self._next(job)
                             if not item:exhausted=True
                     if not item:break
                     if self.manager.cancel.is_set():break
@@ -453,11 +478,17 @@ class Service:
                         self.manager.cancel.wait(remaining)
                         continue
                     if limit==0 and not exhausted and not halt and not self.manager.cancel.is_set():
+                        if retry_ids:
+                            with closing(ai.store(self.path)) as c:
+                                exhausted=not c.execute("SELECT 1 FROM auto_items WHERE job_id=? AND state='pending'"+item_scope+' LIMIT 1',
+                                                        (identifier,*scope_args)).fetchone()
                         # Keep the job alive across peak hours, with no paid calls
                         # and no cursor advancement. Cancellation remains immediate.
-                        self.manager.cancel.wait(2)
-                        continue
-                    if not halt:final='paused' if self.manager.cancel.is_set() else 'completed'
+                        if not exhausted:
+                            self.manager.cancel.wait(2)
+                            continue
+                    if not halt and not self.manager.cancel.is_set():
+                        final=retry_end_state if retry_ids else 'completed'
                     break
                 done,_=wait(inflight,timeout=.2,return_when=FIRST_COMPLETED)
                 for future in done:
@@ -475,7 +506,7 @@ class Service:
                             pass
                         else:
                             streak+=1
-                            if not halt and streak<3 and self.unattended_cooldown and job['scope']=='unlabeled' and self.transient_failure(exc):
+                            if not halt and not retry_ids and streak<3 and self.unattended_cooldown and job['scope']=='unlabeled' and self.transient_failure(exc):
                                 cooldown_until=time.monotonic()+self.unattended_cooldown
                                 self.cooldown=(identifier,cooldown_until)
                             elif streak>=3 or ai.should_pause_batch(exc):
@@ -667,7 +698,9 @@ class Service:
                     if not selected_rows:return result
                     # Submit after leaving the database transaction but while holding
                     # the manager lock so no second task can claim the worker.
-                    self.manager.pool.submit(self.work,identifier)
+                    self.manager.pool.submit(self.work,identifier,retry_ids=tuple(r['id'] for r in selected_rows),
+                                             retry_config=retry_config,
+                                             retry_end_state='completed' if original['state']=='completed' else 'paused')
                     return result
                 if mode=='local':
                     rows=[r for r in rows if r['raw_response_json'] and json.loads(r['raw_response_json'])['diagnostics'].get('finish_reason')=='stop']

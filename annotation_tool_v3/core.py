@@ -13,7 +13,9 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Chem import rdDepictor
+from . import computed_spectra
 from .paths import DEFAULT_DB, main_database
+from .proton_priority import BASE as PROTON_ORDER_BASE, STRIDE as PROTON_ORDER_STRIDE, MAX_SCORE, UNASSIGNED_H, spectrum_score
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "experimental-assignment-sqlite-v1"
@@ -36,6 +38,8 @@ def uid(prefix, *values):
 
 
 QUEUE_ORDER = "CASE queue WHEN 'both_unassigned' THEN 0 WHEN 'complete_remaining' THEN 1 WHEN 'waiting_spectrum' THEN 2 ELSE 3 END"
+NAVIGATION_ORDER = (f'{PROTON_ORDER_BASE}+({QUEUE_ORDER})*{PROTON_ORDER_STRIDE}+{MAX_SCORE}'
+                    f'-CASE WHEN {UNASSIGNED_H} THEN h_info_priority ELSE 0 END')
 ACTIVE = " NOT EXISTS(SELECT 1 FROM spectrum_quality q WHERE q.spectrum_id=spectra.id AND q.decision!='passed') AND NOT EXISTS(SELECT 1 FROM curation_state cs WHERE cs.scope='spectrum' AND cs.target_id=spectra.id AND cs.state!='active')"
 COVERAGE_SQL = "CASE WHEN c_assigned+h_assigned=0 THEN 'none' WHEN c_count+h_count=c_assigned+h_assigned THEN 'full' ELSE 'partial' END"
 
@@ -64,6 +68,13 @@ def is_busy_error(exc):
     return code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 
+def initialize_proton_order(c):
+    if 'h_info_priority' not in {row[1] for row in c.execute('PRAGMA table_info(molecules)')}:
+        c.execute('ALTER TABLE molecules ADD COLUMN h_info_priority INTEGER NOT NULL DEFAULT 0')
+    c.execute(f'CREATE INDEX IF NOT EXISTS molecule_proton_order ON molecules(({NAVIGATION_ORDER}),id)')
+    c.execute(f'CREATE INDEX IF NOT EXISTS molecule_pending_proton_order ON molecules(task_done,({NAVIGATION_ORDER}),id)')
+
+
 def initialize(c):
     c.executescript("""
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -89,6 +100,7 @@ def initialize(c):
       source_key TEXT NOT NULL UNIQUE,solvent TEXT,frequency_mhz REAL,temperature_k REAL,
       conditions_json TEXT NOT NULL,peaks_json TEXT NOT NULL,source_json TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS spectrum_molecule ON spectra(molecule_id,nucleus);
+    CREATE INDEX IF NOT EXISTS spectrum_export_source ON spectra(source,molecule_id);
     CREATE TABLE IF NOT EXISTS spectrum_quality(
       spectrum_id TEXT PRIMARY KEY REFERENCES spectra(id),policy TEXT NOT NULL,
       decision TEXT NOT NULL,details_json TEXT NOT NULL,updated_at TEXT NOT NULL);
@@ -155,6 +167,8 @@ def initialize(c):
     c.execute(f"CREATE INDEX IF NOT EXISTS molecule_priority ON molecules(({QUEUE_ORDER}),id)")
     c.execute(f"CREATE INDEX IF NOT EXISTS molecule_pending_priority ON molecules(task_done,({QUEUE_ORDER}),id)")
     c.execute(f"CREATE INDEX IF NOT EXISTS molecule_coverage_processing ON molecules(({COVERAGE_SQL}),task_done,({QUEUE_ORDER}),id)")
+    initialize_proton_order(c)
+    computed_spectra.initialize(c)
     if not c.execute("SELECT 1 FROM meta WHERE key='activity_backfill_v1'").fetchone():
         # Only recover actual timestamped operations, never infer a save time
         # from creation time or revision. Note-only old saves were not timestamped.
@@ -268,15 +282,23 @@ def add_pair(c, mid, cs, hs, basis):
 def refresh_molecule(c, mid):
     from .peak_table import effective_peaks
     totals = {"13C": [0, 0], "1H": [0, 0]}
+    priority = 0
     for r in c.execute("SELECT id,nucleus,peaks_json,source_json FROM spectra WHERE molecule_id=? AND" + ACTIVE, (mid,)):
         annotations = {a["peak_id"]: a["status"] for a in c.execute("SELECT peak_id,status FROM annotations WHERE spectrum_id=?", (r["id"],))}
-        for p in effective_peaks(json.loads(r["peaks_json"]), json.loads(r['source_json'])):
+        peaks = effective_peaks(json.loads(r["peaks_json"]), json.loads(r['source_json']))
+        for p in peaks:
             totals[r["nucleus"]][0] += 1
             totals[r["nucleus"]][1] += annotations.get(p["peak_id"]) in ASSIGNED
+        if r['nucleus'] == '1H':
+            excluded = {pid for pid, status in annotations.items() if status in ('solvent', 'impurity', 'excluded')}
+            priority = max(priority, spectrum_score(peaks, excluded))
     cn, ca = totals["13C"]
     hn, ha = totals["1H"]
     if not cn and not hn:
-        queue = "quality_hold"
+        has_computation = computed_spectra.exists(c) and c.execute(
+            "SELECT 1 FROM computed_spectra WHERE molecule_id=? LIMIT 1", (mid,)
+        ).fetchone()
+        queue = "simulation_only" if has_computation else "quality_hold"
     elif not cn or not hn:
         queue = "waiting_spectrum"
     elif ca == cn and ha == hn:
@@ -288,7 +310,8 @@ def refresh_molecule(c, mid):
     manual = c.execute("SELECT state FROM curation_state WHERE scope='molecule' AND target_id=?", (mid,)).fetchone()
     if manual and manual[0] != 'active':
         queue = 'manual_hold' if manual[0] == 'held' else 'excluded_training'
-    c.execute("UPDATE molecules SET queue=?,c_count=?,h_count=?,c_assigned=?,h_assigned=? WHERE id=?", (queue, cn, hn, ca, ha, mid))
+    c.execute("UPDATE molecules SET queue=?,c_count=?,h_count=?,c_assigned=?,h_assigned=?,h_info_priority=? WHERE id=?",
+              (queue, cn, hn, ca, ha, priority, mid))
 
 
 def source_assignment_targets(peak, provenance):
@@ -307,14 +330,13 @@ def source_assignment_targets(peak, provenance):
     return sorted(targets)
 
 
-def record(c, mid, require_quality=False, include_archived=False):
-    r = c.execute("SELECT * FROM molecules WHERE id=?", (mid,)).fetchone()
+def record(c, mid, require_quality=False, include_archived=False, *, include_computed=False):
+    r = c.execute(f"SELECT *,({NAVIGATION_ORDER}) AS navigation_rank FROM molecules WHERE id=?", (mid,)).fetchone()
     if not r:
         raise KeyError(mid)
     result = dict(r)
     activity = c.execute("SELECT * FROM molecule_activity WHERE molecule_id=?", (mid,)).fetchone()
     result['activity'] = dict(activity) if activity else None
-    result['navigation_rank'] = queue_rank(result['queue'])
     result["structure"] = json.loads(result.pop("structure_json"))
     mol = Chem.MolFromSmiles(result['smiles'])
     metal_ids = {a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() in METAL_ATOMIC_NUMBERS}
@@ -339,6 +361,7 @@ def record(c, mid, require_quality=False, include_archived=False):
         if manual_state != 'active' and not include_archived:
             continue
         item = dict(s)
+        item["spectrum_kind"] = "experimental"
         item["quality"] = quality
         item['manual_state'] = manual_state
         item['editable'] = (result['curation']['molecule_state'] == 'active'
@@ -409,6 +432,8 @@ def record(c, mid, require_quality=False, include_archived=False):
     result['ai_history']=[dict(row) for row in c.execute('SELECT id,job_id,provider,model,response_model,created_at,applied_count FROM ai_annotation_results WHERE molecule_id=? ORDER BY created_at DESC LIMIT 30',(mid,))]
     result["training_eligible"] = result["training_eligible"] and bool(active)
     result["training_eligibility_note"] = "Operational admission only; not evidence of complete spectra or correct assignments."
+    if include_computed:
+        result["spectra"].extend(computed_spectra.for_molecule(c, mid))
     return result
 
 
@@ -481,7 +506,7 @@ def save_annotations(c, mid, payload):
         # Build the acknowledgement within the same transaction, so it cannot
         # accidentally acknowledge a different writer's later revision. Any
         # failure here still rolls back; after commit no further DB read can fail.
-        result = record(c, mid, include_archived=True)
+        result = record(c, mid, include_archived=True, include_computed=True)
         c.commit()
         return result
     except Exception:
@@ -493,7 +518,13 @@ def selection_where(params):
     tests, vals = [], []
     for name in ("queue", "origin"):
         if params.get(name):
-            if name == 'queue' and params[name] == 'dual':
+            if name == 'origin' and params[name] in (computed_spectra.IBM, computed_spectra.DFT8K):
+                tests.append("molecules.id IN (SELECT molecule_id FROM computed_spectra WHERE source=?)")
+                vals.append(params[name])
+            elif name == 'origin' and params[name] == computed_spectra.CASPRE:
+                tests.append("molecules.id IN (SELECT molecule_id FROM spectra WHERE source=?)")
+                vals.append(params[name])
+            elif name == 'queue' and params[name] == 'dual':
                 tests.append("queue IN ('complete_remaining','both_unassigned','complete')")
             else:
                 tests.append(f"{name}=?")
@@ -552,22 +583,17 @@ def listing(c, params):
     limit = min(100, max(1, int(params.get("limit", 40))))
     offset = max(0, int(params.get("offset", 0)))
     view = params.get('view', '')
-    sort = 'created_at' if view == 'imported' else "coalesce(last_processed_at,'')" if view in ('recent', 'finished') else QUEUE_ORDER
+    sort = 'created_at' if view == 'imported' else "coalesce(last_processed_at,'')" if view in ('recent', 'finished') else NAVIGATION_ORDER
     descending = view in ('recent', 'finished', 'imported')
     source = 'molecule_activity a JOIN molecules ON molecules.id=a.molecule_id' if view == 'recent' else 'molecules LEFT JOIN molecule_activity a ON a.molecule_id=molecules.id'
-    order_sort = sort
-    if params.get('queue') and params['queue'] != 'dual' and not params.get('q') and not descending:
-        if params.get('pending'):
-            # Queue + pending is a small, contiguous range in this index.
-            # An ordering index over ALL pending molecules otherwise scans the
-            # whole database when a queue contains fewer rows than the limit.
-            source = 'molecules INDEXED BY molecule_queue LEFT JOIN molecule_activity a ON a.molecule_id=molecules.id'
-            order_sort = 'id'  # Queue rank is constant; keep it in cursors.
-        else:
-            source = 'molecules INDEXED BY molecule_priority LEFT JOIN molecule_activity a ON a.molecule_id=molecules.id'
-            where += (' AND ' if where else ' WHERE ') + f'({QUEUE_ORDER})=?'
-            vals.append(queue_rank(params['queue']))
-            order_sort = 'id'
+    if not descending and not params.get('q'):
+        if not any(params.get(key) for key in ('origin', 'coverage', 'annotation_source')):
+            index = 'molecule_pending_proton_order' if params.get('pending') and not params.get('finished') else 'molecule_proton_order'
+            source = f'molecules INDEXED BY {index} LEFT JOIN molecule_activity a ON a.molecule_id=molecules.id'
+        if params.get('queue') and params['queue'] != 'dual':
+            lower = PROTON_ORDER_BASE + queue_rank(params['queue']) * PROTON_ORDER_STRIDE
+            where += (' AND ' if where else ' WHERE ') + f'({sort})>=? AND ({sort})<?'
+            vals.extend([lower, lower + PROTON_ORDER_STRIDE])
     # Count molecules, not save events, across all pages of the same filters.
     # Navigation requests don't display totals and need no extra count query.
     backwards = bool(params.get('before'))
@@ -581,13 +607,21 @@ def listing(c, params):
         value = str(anchor[1]) if descending else int(anchor[1])
         comparator = '<' if descending != backwards else '>'
         id_comparator = '<' if backwards else '>'
-        where += (' AND ' if where else ' WHERE ') + f'(({sort}) {comparator} ? OR (({sort})=? AND id{id_comparator}?)) AND id!=?'
-        vals.extend([value, value, anchor[2], anchor[2]])
+        where += ' AND ' if where else ' WHERE '
+        if descending:
+            where += f'(({sort}) {comparator} ? OR (({sort})=? AND id{id_comparator}?)) AND id!=?'
+            vals.extend([value, value, anchor[2], anchor[2]])
+        else:
+            # A page opened before upgrading can still send its old queue rank.
+            if 0 <= value <= 3:
+                row = c.execute('SELECT h_info_priority FROM molecules WHERE id=?', (anchor[2],)).fetchone()
+                priority = row[0] if row and value in (0, 2) else 0
+                value = PROTON_ORDER_BASE + value * PROTON_ORDER_STRIDE + MAX_SCORE - priority
+            where += f'({sort}){comparator}=? AND (({sort}),id){comparator}(?,?) AND id!=?'
+            vals.extend([value, value, anchor[2], anchor[2]])
         offset = 0
-    order = f"{order_sort} {'DESC' if descending != backwards else 'ASC'}"
-    if order_sort != 'id':
-        order += f",id {'DESC' if backwards else 'ASC'}"
-    rows = c.execute("SELECT id,formula,smiles,origin,queue,c_count,h_count,c_assigned,h_assigned,task_done,revision,created_at,last_processed_at,last_action," + sort + " AS sort_value FROM " + source + where + f" ORDER BY {order} LIMIT ? OFFSET ?", [*vals, limit, offset])
+    order = f"({sort}) {'DESC' if descending != backwards else 'ASC'},id {'DESC' if backwards else 'ASC'}"
+    rows = c.execute("SELECT id,formula,smiles,origin,queue,c_count,h_count,c_assigned,h_assigned,h_info_priority,task_done,revision,created_at,last_processed_at,last_action," + sort + " AS sort_value FROM " + source + where + f" ORDER BY {order} LIMIT ? OFFSET ?", [*vals, limit, offset])
     result = []
     for row in rows:
         item = dict(row)
@@ -614,6 +648,7 @@ def stats(c):
     for status, done, count in c.execute(f'SELECT ({COVERAGE_SQL}),task_done,count(*) FROM molecules GROUP BY ({COVERAGE_SQL}),task_done'):
         result['annotation_processing'][status]['finished' if done else 'pending'] = count
     result['spectrum_coverage'] = spectrum_coverage(c, result['queues'])
+    result['computed_spectra'] = computed_spectra.statistics(c)
     return result
 
 
