@@ -4,7 +4,7 @@ const $$ = selector => [...document.querySelectorAll(selector)];
 const labels = {complete_remaining:"部分归属",both_unassigned:"无归属",waiting_spectrum:"缺少实验谱",complete:"全归属",assigned:"唯一归属",equivalent_group:"等价组",overlap:"重叠",source_group:"原库多原子归属",ambiguous:"歧义",unassigned:"未归属",solvent:"溶剂峰",impurity:"杂质",excluded:"不计入"};
 const coverageLabels={full:'全归属',partial:'部分归属',none:'无归属'};
 const sourceLabel=source=>({literature_pdf:'文献实验谱',IBM_DFT:'IBM 模拟谱',
-  'CASCADE-DFT8K':'DFT8K 模拟谱','CASPRE-JEOL':'CASPRE · JEOL'}[source]||source);
+  'CASCADE-DFT8K':'DFT8K 模拟谱','MagNET-DFT':'MagNET 模拟谱','CASPRE-JEOL':'CASPRE · JEOL'}[source]||source);
 function coverageLabel(r){const total=(r.c_count||0)+(r.h_count||0),assigned=(r.c_assigned||0)+(r.h_assigned||0);return coverageLabels[r.annotation_coverage?.status||(assigned?(assigned===total?'full':'partial'):'none')];}
 labels.quality_hold="谱图已隔离";
 labels.simulation_only="仅模拟谱可用";
@@ -273,7 +273,8 @@ function renderSpectra(){
   renderPeaks();window.renderSpectrumCuration?.();
   if(isComputed(s)||s.source==='CASPRE-JEOL'){
     const p=s.provenance||{};
-    const details=[sourceLabel(s.source),p.source_record_id?'记录 '+p.source_record_id:null,
+    const details=[sourceLabel(s.source),p.source_dataset,p.calculation_environment==='gas'?'气相计算':
+      p.calculation_environment==='PCM chloroform'?'氯仿隐式溶剂计算':null,p.source_record_id?'记录 '+p.source_record_id:null,
       p.source_sdf_record_1based?'SDF 第 '+p.source_sdf_record_1based+' 条':null,
       p.frame_count?p.frame_count+' 帧计算位移均值':null,p.chemical_shift_reference?p.chemical_shift_reference+' 参照':null,
       p.compound_name].filter(Boolean).join(' · ');
@@ -410,7 +411,7 @@ $("#list").onclick=e=>{const b=e.target.closest("[data-mid]");if(b&&!state.navig
 let searchTimer;$("#search").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};
 $("#search").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();clearTimeout(searchTimer);loadList(true).catch(x=>toast(x.message));}};
 ["#queue","#origin","#coverage","#searchScope","#annotationSource"].forEach(id=>{if($(id))$(id).onchange=()=>{
-  if(id==='#origin'&&['IBM_DFT','CASCADE-DFT8K','CASPRE-JEOL'].includes($(id).value)){$('#queue').value='';$('#processing').value='all';}
+  if(id==='#origin'&&['IBM_DFT','CASCADE-DFT8K','MagNET-DFT','CASPRE-JEOL'].includes($(id).value)){$('#queue').value='';$('#processing').value='all';}
   loadList(true).catch(e=>toast(e.message));
 };});
 $('#processing').onchange=()=>{if($('#view').value==='finished'&&$('#processing').value!=='finished')$('#view').value='';loadList(true).catch(e=>toast(e.message));};

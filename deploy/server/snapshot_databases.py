@@ -1,10 +1,11 @@
-"""Stage the three AtomNMR SQLite files and a SHA256 list for transfer or backup."""
+"""Stage three AtomNMR SQLite files, without saved API keys, and a SHA256 list."""
 import argparse
 import hashlib
 import shutil
 import sqlite3
 from contextlib import ExitStack, closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 DATABASES = ('assignments.sqlite', 'ai_annotations.sqlite', 'ai_benchmarks.sqlite')
@@ -13,6 +14,17 @@ DATABASES = ('assignments.sqlite', 'ai_annotations.sqlite', 'ai_benchmarks.sqlit
 def sha256(path):
     with path.open('rb') as handle:
         return hashlib.file_digest(handle, 'sha256').hexdigest()
+
+
+def strip_credentials(db):
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+    if 'api_credentials' in tables:
+        db.execute('DELETE FROM api_credentials')
+    if 'settings' in tables:
+        db.execute("DELETE FROM settings WHERE key IN ('active_credential','deepseek_api_key_dpapi')")
+    db.commit()
+    # Rebuild the file so deleted records cannot survive in unused pages.
+    db.execute('VACUUM')
 
 
 def snapshot(source, output):
@@ -29,18 +41,25 @@ def snapshot(source, output):
     output.mkdir()
     sums = []
     with ExitStack() as stack:
+        private_dir = Path(stack.enter_context(TemporaryDirectory(prefix='atomnmr-snapshot-')))
         readers = [stack.enter_context(closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=20)))
                    for path in files]
         versions = [db.execute('PRAGMA data_version').fetchone()[0] for db in readers]
         for path, reader in zip(files, readers):
             target = output / path.name
+            contains_keys = path.name == 'ai_annotations.sqlite'
+            staging = private_dir / path.name if contains_keys else target
             print(f'Snapshotting {path.name} ({path.stat().st_size:,} bytes)', flush=True)
-            with closing(sqlite3.connect(target)) as writer:
+            with closing(sqlite3.connect(staging)) as writer:
                 reader.backup(writer, pages=2048)
                 # A transferable snapshot uses only its main file.
                 writer.execute('PRAGMA journal_mode=DELETE')
+                if contains_keys:
+                    strip_credentials(writer)
                 check = writer.execute('PRAGMA quick_check(1)').fetchone()[0]
                 if check != 'ok':raise ValueError(f'{path.name}: SQLite check failed: {check}')
+            if contains_keys:
+                shutil.copyfile(staging, target)
             sums.append(f'{sha256(target)}  {path.name}\n')
         if versions != [db.execute('PRAGMA data_version').fetchone()[0] for db in readers]:
             raise RuntimeError('Source databases changed during backup. Stop the writers and use a new destination.')

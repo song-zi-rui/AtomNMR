@@ -17,6 +17,7 @@ python -m annotation_tool_v3.server --port 8767 --open
 - `docs/实验NMR数据库建设与使用_v2_20260929.md`：建设规则、字段字典、操作说明与限制。
 - `/overview.html`：三张 SVG 与真实分子示例。
 - `/auto.html`：持续自动标注、暂停/恢复、正式密钥管理及直接入库；[使用指南](../docs/持续自动标注与密钥管理_20261027.md)。AI 标签记录具体模型，只补空缺；原人工与原库标签保留。`/ai.html?history=1` 查看旧批次。
+- Windows 密钥使用本机加密。同一台电脑上的账号可以共用，旧密钥会在能解密它的账号下自动迁移。需要传输或上传数据库时，通过 `deploy/server/snapshot_databases.py` 生成快照。该快照保留标注历史并移除密钥记录。
 - 界面支持 JSONL / Parquet / LMDB 导出，范围为当前分子、筛选结果或全部已迁入主库。
 - IBM 与 DFT8K 模拟谱以及 CASPRE 实验碳谱按分子挂载，标注页可切换与并排对比。导出页可按实验或模拟、谱来源、归属情况及 H/C 核种组合筛选。AtomPeak 训练包按分子连接层分组划分。
 

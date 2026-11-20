@@ -5,7 +5,7 @@ let query='';
 try{query=JSON.parse(params.get('filters')||'{}')?.q||'';}catch{}
 $('query').value=params.get('molecule_id')||query;
 let job=null,poll=null,working=false,catalog={};
-const sourceNames={IBM_DFT:'IBM', 'CASCADE-DFT8K':'CASCADE DFT8K', 'CASPRE-JEOL':'CASPRE · JEOL',
+const sourceNames={IBM_DFT:'IBM', 'CASCADE-DFT8K':'CASCADE DFT8K', 'MagNET-DFT':'MagNET DFT', 'CASPRE-JEOL':'CASPRE · JEOL',
   nmrshiftdb2:'NMRShiftDB2',manual_revision:'人工修订谱',literature_pdf:'文献实验谱'};
 const coverageNames={all:'全部归属情况',full:'全部归属',partial:'部分归属',none:'无归属'};
 const nucleiNames={all:'全部核种组合',dual:'全双谱',proton_only:'仅 H 谱',carbon_only:'仅 C 谱',none:'无当前可用谱'};

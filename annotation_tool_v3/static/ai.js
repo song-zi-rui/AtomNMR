@@ -16,7 +16,7 @@ async function settings(){
  $('#keyState').textContent=s.key_configured?(s.key_saved?'已保存 · 自动沿用':'使用环境变量密钥'):s.key_error?'密钥需要重新保存':'首次填写密钥';
  $('#apiKey').placeholder=s.key_configured?'已配置；留空继续沿用，填写新值才更换':'首次填写后会在本机加密保存';
  $('#clearKey').disabled=!s.key_saved;
- $('#keyHelp').textContent=s.key_error||'密钥由本机 Windows 用户加密保存，刷新、重启服务后自动沿用。输入框不回显；留空不会清除。';
+ $('#keyHelp').textContent=s.key_error||'密钥在这台 Windows 电脑上加密保存，重启服务或切换本机账号后自动沿用。输入框不回显；留空不会清除。';
  return s;
 }
 async function saveSettings(){const body={model:$('#model').value.trim(),thinking:$('#thinking').checked,max_tokens:Number($('#maxTokens').value),timeout:Number($('#timeout').value),reasoning_effort:$('#effort').value,wire_format:$('#wireFormat').value};if($('#apiKey').value.trim())body.api_key=$('#apiKey').value.trim();await api('/api/ai/settings',body);$('#apiKey').value='';const s=await settings();$('#connectionResult').textContent=s.key_configured?'设置已保存。已配置的密钥会自动沿用；之后不必重复输入。':'参数已保存；首次使用请填写 API Key，保存一次后会自动沿用。';}

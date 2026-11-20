@@ -4,6 +4,7 @@ import json
 
 IBM = 'IBM_DFT'
 DFT8K = 'CASCADE-DFT8K'
+MAGNET = 'MagNET-DFT'
 CASPRE = 'CASPRE-JEOL'
 
 

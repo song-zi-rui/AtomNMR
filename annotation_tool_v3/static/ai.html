@@ -8,7 +8,7 @@
 <div class="layout"><aside>
 <section class="card" hidden><div class="sectionhead"><h2>1. 接口设置</h2><span id="keyState" class="muted">未配置</span></div><p class="hint">DeepSeek 官方接口 · api.deepseek.com</p>
 <label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="首次填写；留空会继续使用已保存密钥"></label>
-<p id="keyHelp" class="hint">密钥由本机 Windows 用户加密保存，刷新、重启服务后自动沿用。留空不清除；需要更换时填写新密钥。</p>
+<p id="keyHelp" class="hint">密钥在这台 Windows 电脑上加密保存，重启服务或切换本机账号后自动沿用。留空不清除；需要更换时填写新密钥。</p>
 <label>模型名称<input id="model" list="models" value="deepseek-flash"><datalist id="models"><option value="deepseek-flash"><option value="deepseek-v4-pro"><option value="deepseek-chat"><option value="deepseek-reasoner"></datalist></label>
 <label class="check"><input id="thinking" type="checkbox" checked>启用思考模式</label>
 <label>思考强度<select id="effort"><option value="high">high · 充分推理</option><option value="low">low · 节省推理</option><option value="auto">自动按记录复杂度选择</option></select></label>

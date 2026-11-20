@@ -664,6 +664,7 @@ class Manager:
         for control in controls:control.cancel()
 
     def refresh_credential(self):
+        self.vault.migrate_machine_scope()
         self.secret,self.credential,self.secret_error=self.vault.read()
         self.secret_saved=bool(self.credential)
 

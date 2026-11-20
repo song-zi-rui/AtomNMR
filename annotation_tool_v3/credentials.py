@@ -1,6 +1,7 @@
 """Named, locally encrypted API credentials with explicit lifecycle actions."""
 import hashlib
 import json
+import os
 import uuid
 from contextlib import closing
 
@@ -39,6 +40,29 @@ class Vault:
     def active(self,c):
         r=c.execute("SELECT value FROM settings WHERE key='active_credential'").fetchone()
         return json.loads(r[0]) if r else None
+
+    def migrate_machine_scope(self):
+        """Re-encrypt legacy credentials readable by this Windows account."""
+        if os.name != 'nt':
+            return 0
+        migrated = 0
+        prefix = local_secrets.MACHINE_PREFIX
+        with closing(self.connect(self.path)) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            rows = c.execute('SELECT id,encrypted FROM api_credentials WHERE substr(encrypted,1,?)!=?',
+                             (len(prefix),prefix)).fetchall()
+            for row in rows:
+                try:
+                    secret = local_secrets.unprotect(row['encrypted'])
+                    protected = local_secrets.protect(secret)
+                    if local_secrets.unprotect(protected) != secret:
+                        continue
+                except ValueError:
+                    # Leave unreadable legacy entries available to their original account.
+                    continue
+                c.execute('UPDATE api_credentials SET encrypted=? WHERE id=?',(protected,row['id']))
+                migrated += 1
+        return migrated
 
     def status(self):
         with closing(self.connect(self.path)) as c:

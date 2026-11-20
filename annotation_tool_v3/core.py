@@ -518,7 +518,7 @@ def selection_where(params):
     tests, vals = [], []
     for name in ("queue", "origin"):
         if params.get(name):
-            if name == 'origin' and params[name] in (computed_spectra.IBM, computed_spectra.DFT8K):
+            if name == 'origin' and params[name] in (computed_spectra.IBM, computed_spectra.DFT8K, computed_spectra.MAGNET):
                 tests.append("molecules.id IN (SELECT molecule_id FROM computed_spectra WHERE source=?)")
                 vals.append(params[name])
             elif name == 'origin' and params[name] == computed_spectra.CASPRE:
