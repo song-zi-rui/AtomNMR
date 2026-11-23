@@ -369,7 +369,7 @@ def request_api(key, method, endpoint, payload=None, timeout=30,base_url='https:
         with opener.open(req, timeout=timeout) as response:
             control.stage('response_body')
             if stream and 'application/json' not in response.headers.get('Content-Type','').lower():
-                value=read_sse(response,started=started,timeout=timeout,max_tokens=(payload or {}).get('max_tokens'))
+                value=read_sse(response,started=started,timeout=timeout,max_tokens=(payload or {}).get('max_tokens'),key=key)
                 if control:control.seal()
                 return value
             notify_progress(phase='waiting_result',stream=False)

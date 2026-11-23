@@ -35,6 +35,51 @@ def _error_text(value, key='', limit=500):
     return text.strip()[:limit]
 
 
+def stream_service_error(value, headers, meta, usage, key):
+    """Record a bounded, redacted error event separately from the HTTP handshake."""
+    detail = value.get('error', value)
+    fields = detail if isinstance(detail, dict) else {'message': detail}
+    provider = {name: _error_text(fields.get(name), key, 600 if name == 'message' else 100)
+                for name in ('message', 'code', 'type', 'param')}
+    if not provider['message']:
+        provider['message'] = _error_text(value.get('message'), key, 600)
+    provider = {name: text for name, text in provider.items() if text}
+    status = None
+    for container in (fields, value):
+        for name in ('status_code', 'status', 'code'):
+            val = container.get(name)
+            if (type(val) is int or isinstance(val, str) and re.fullmatch(r'[45][0-9]{2}', val)) and 400 <= int(val) <= 599:
+                status = int(val)
+                break
+        if status is not None:
+            break
+    codes = {'ratelimiterror': 429, 'ratelimitexceeded': 429, 'toomanyrequests': 429, 'concurrencylimit': 429,
+             'internalservererror': 500, 'servererror': 500, 'serviceunavailable': 503, 'serviceunavailableerror': 503,
+             'authenticationerror': 401, 'invalidapikey': 401, 'permissiondeniederror': 403,
+             'modelnotfound': 404, 'badrequesterror': 400, 'invalidrequesterror': 400, 'contextlengthexceeded': 400}
+    if status is None:
+        for name in ('code', 'type'):
+            code = re.sub(r'[^a-z0-9]', '', provider.get(name, '').lower())
+            if code in codes:
+                status = codes[code]
+                break
+    message = '流式接口报告服务错误'
+    if status is not None:
+        message += f'（服务端状态 {status}）'
+    if provider.get('message'):
+        message += '。服务端原因：' + provider['message']
+    request_id = next((headers[h] for h in ('x-request-id', 'request-id', 'x-correlation-id') if headers.get(h)),
+                      fields.get('request_id') or value.get('request_id') or meta.get('response_id'))
+    saw_generation = bool(meta['content_characters'] or meta['reasoning_characters'] or usage.get('completion_tokens'))
+    error = APIRequestError(message, status=meta['http_status'], uncertain=status != 429 or saw_generation, usage=dict(usage))
+    retry_after = headers.get('retry-after') or fields.get('retry_after') or value.get('retry_after')
+    error.diagnostics.update(error_kind='stream_service_error', provider_status=status,
+                             provider_error=provider, request_id=_error_text(request_id, key, 160) or None,
+                             retry_after=_error_text(retry_after, key, 100) or None,
+                             failure_stage='response_body', application_send_started=True, stream_transport=dict(meta))
+    return error
+
+
 def http_error(response, *, key='', elapsed_s=None):
     """Expose provider reasons and retry guidance without resubmitting a request."""
     status=response.code
@@ -231,7 +276,7 @@ def token_time_curve(stream,usage):
             'note':'中间时点按各通道累计字符比例估算并归一到接口最终usage；末端token总数以接口usage为准，过程点不是逐token精确计数。'}
 
 
-def read_sse(response, *, started, timeout, max_tokens=None):
+def read_sse(response, *, started, timeout, max_tokens=None, key=''):
     content = []
     usage = {}
     meta = {'stream': True, 'chunks': 0, 'content_characters': 0, 'reasoning_characters': 0,
@@ -245,6 +290,8 @@ def read_sse(response, *, started, timeout, max_tokens=None):
     done = False
     size = 0
     pending = []
+    event_type = ''
+    headers = {str(name).lower(): val for name, val in (getattr(response, 'headers', None) or {}).items()}
     last_report = 0
     answer_tail = ''
     repeat_checked_at = 0
@@ -279,7 +326,9 @@ def read_sse(response, *, started, timeout, max_tokens=None):
             last_report = now
 
     def event():
-        nonlocal finish, done, answer_tail, repeat_checked_at,pending_bytes
+        nonlocal finish, done, answer_tail, repeat_checked_at, pending_bytes, event_type
+        is_error_event = event_type == 'error'
+        event_type = ''
         if not pending:
             return
         text = '\n'.join(pending)
@@ -291,20 +340,25 @@ def read_sse(response, *, started, timeout, max_tokens=None):
         try:
             value = json.loads(text)
         except (ValueError, UnicodeError):
+            if is_error_event:
+                sample(True)
+                raise stream_service_error({}, headers, meta, usage, key) from None
             raise APIRequestError('流式接口返回了无效数据；本批次停止，请检查网关兼容性。', uncertain=True, usage=usage) from None
+        if isinstance(value, dict) and isinstance(value.get('usage'), dict):
+            usage.update(value['usage'])
+        if is_error_event or (isinstance(value, dict) and value.get('error')):
+            sample(True)
+            value = value if isinstance(value, dict) else {'message': value}
+            raise stream_service_error(value, headers, meta, usage, key)
         if not isinstance(value, dict):
             raise APIRequestError('流式接口返回格式异常；请检查网关兼容性。', uncertain=True, usage=usage)
-        if value.get('error'):
-            raise APIRequestError('流式接口报告服务错误；本批次停止，不自动重试。', uncertain=True, usage=usage)
         meta['chunks'] += 1
         meta['last_event_elapsed_ms']=(time.perf_counter()-started)*1000
-        for key in ('id', 'model', 'created'):
-            if value.get(key) is not None:
-                result[key] = value[key]
+        for name in ('id', 'model', 'created'):
+            if value.get(name) is not None:
+                result[name] = value[name]
         if result.get('id') is not None:meta['response_id']=result['id']
         if result.get('model') is not None:meta['response_model']=result['model']
-        if isinstance(value.get('usage'), dict):
-            usage.update(value['usage'])
         for choice in value.get('choices') or []:
             if choice.get('index', 0) != 0:
                 continue
@@ -388,13 +442,18 @@ def read_sse(response, *, started, timeout, max_tokens=None):
             pending.append(text[5:].lstrip(' '))
             pending_bytes+=len(line)
             if pending_bytes>STREAM_EVENT_LIMIT:raise oversized('stream_event_limit',STREAM_EVENT_LIMIT)
+        elif text.startswith('event:'):
+            event_type = text[6:].strip()
         elif text.startswith(':'):
             meta['keep_alive_comments']+=1
         elif text.lstrip().lower().startswith(('<!doctype html', '<html')):
             raise APIRequestError('API地址返回了网页；请核对Base URL的API路径。')
     if finish is None:
         sample(True)
-        raise APIRequestError('流式连接结束，但未收到完整结束标记；已暂停批次，不自动重复请求。', uncertain=True, usage=usage)
+        error=APIRequestError('流式连接结束，但未收到完整结束标记，远端结果未知。', uncertain=True, usage=usage)
+        error.diagnostics.update(error_kind='incomplete_stream',failure_stage='response_body',
+                                 application_send_started=True,stream_transport=dict(meta))
+        raise error
     sample(True)
     report(True)
     meta['done_marker_received']=done

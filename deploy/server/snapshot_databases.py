@@ -1,4 +1,4 @@
-"""Stage three AtomNMR SQLite files, without saved API keys, and a SHA256 list."""
+"""Stage AtomNMR SQLite files, without saved API keys, and a SHA256 list."""
 import argparse
 import hashlib
 import shutil
@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 
 DATABASES = ('assignments.sqlite', 'ai_annotations.sqlite', 'ai_benchmarks.sqlite')
+ANNOTATION_DATABASES = DATABASES[:2]
 
 
 def sha256(path):
@@ -27,11 +28,12 @@ def strip_credentials(db):
     db.execute('VACUUM')
 
 
-def snapshot(source, output):
+def snapshot(source, output, *, annotation_only=False):
     source, output = source.resolve(), output.resolve()
-    files = [source / name for name in DATABASES]
+    names = ANNOTATION_DATABASES if annotation_only else DATABASES
+    files = [source / name for name in names]
     if not all(path.is_file() for path in files):
-        raise FileNotFoundError('Source must contain all three AtomNMR databases')
+        raise FileNotFoundError('Required AtomNMR databases: ' + ', '.join(names))
     if output.exists():
         raise FileExistsError('Choose a new destination directory; snapshots are never overwritten')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -71,8 +73,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog='Stop all AtomNMR writers first to keep the three databases aligned.')
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--annotation-only', action='store_true', help='Save the main database and the automatic annotation history')
     args = parser.parse_args()
-    snapshot(args.source, args.output)
+    snapshot(args.source, args.output, annotation_only=args.annotation_only)
 
 
 if __name__ == '__main__':main()

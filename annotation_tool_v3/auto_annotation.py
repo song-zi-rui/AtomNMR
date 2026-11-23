@@ -9,7 +9,7 @@ from contextlib import closing
 from datetime import datetime,timezone
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-from . import core as db, ai_annotation as ai, ai_database, ai_parallel, ai_duration
+from . import core as db, ai_annotation as ai, ai_database, ai_parallel, ai_duration, auto_retry
 
 QUEUE_ORDER_POLICY = 'unlabeled_h_info_first_v2'
 
@@ -55,8 +55,12 @@ def initialize(c):
     columns={r[1] for r in c.execute('PRAGMA table_info(auto_jobs)')}
     for name in ('processed','success','failures','applied_peaks'):
         if name not in columns:c.execute('ALTER TABLE auto_jobs ADD COLUMN '+name+' INTEGER NOT NULL DEFAULT 0')
-    if 'request_config_json' not in {r[1] for r in c.execute('PRAGMA table_info(auto_items)')}:
-        c.execute('ALTER TABLE auto_items ADD COLUMN request_config_json TEXT')
+    item_columns={r[1] for r in c.execute('PRAGMA table_info(auto_items)')}
+    for name,definition in (('request_config_json','TEXT'),('auto_retry_at','REAL'),
+                            ('auto_retry_count','INTEGER NOT NULL DEFAULT 0')):
+        if name not in item_columns:c.execute(f'ALTER TABLE auto_items ADD COLUMN {name} {definition}')
+    if 'retry_cooldown_until' not in columns:
+        c.execute('ALTER TABLE auto_jobs ADD COLUMN retry_cooldown_until REAL NOT NULL DEFAULT 0')
     if 'deleted_at' not in columns:
         c.execute('ALTER TABLE auto_jobs ADD COLUMN deleted_at TEXT')
     if 'name' not in columns:
@@ -93,7 +97,6 @@ class Service:
         self.manager=manager;self.path=manager.path;self.main_path=manager.main_path
         self.duration_lock=threading.Lock();self.duration_cache={}
         self.unattended_cooldown=0
-        self.cooldown=None
         with closing(ai.store(self.path)) as c:initialize(c)
 
     def capacity(self,config,now=None):
@@ -355,19 +358,19 @@ class Service:
             c.execute("UPDATE auto_items SET state='done',publication_json=?,diagnostics_json=?,updated_at=? WHERE id=?",(db.dumps(result),db.dumps(diagnostics),db.now(),item['id']));c.commit()
         return result
 
-    def _execute(self,item,config):
+    def _execute(self,item,config,*,automatic_retry=False):
         identifier=item['job_id']
         if item['request_config_json']:
             config=json.loads(item['request_config_json'])
         source_id=config.get('retry_source_item_id') or config.get('retry_source_items',{}).get(item['molecule_id'])
-        if source_id:
+        if source_id or (item['state']=='pending' and item['auto_retry_count']):
             with closing(ai.store(self.path)) as c:
-                source=c.execute('SELECT * FROM auto_items WHERE id=?',(source_id,)).fetchone()
+                source=c.execute('SELECT * FROM auto_items WHERE id=?',(source_id,)).fetchone() if source_id else item
             reason=self._retry_skip_reason(source,identifier) if source else '原失败记录已不存在，已跳过'
             if reason:
                 with closing(ai.store(self.path)) as c:
                     c.execute('BEGIN IMMEDIATE')
-                    changed=c.execute("UPDATE auto_items SET state='skipped',error=?,updated_at=? WHERE id=? AND state IN ('pending','responded')",(reason,db.now(),item['id'])).rowcount
+                    changed=c.execute("UPDATE auto_items SET state='skipped',error=?,auto_retry_at=NULL,updated_at=? WHERE id=? AND state IN ('pending','responded')",(reason,db.now(),item['id'])).rowcount
                     if changed and config.get('retry_mode')=='in_place_failed_retry':
                         c.execute('UPDATE auto_jobs SET failures=max(0,failures-1),skipped=skipped+1 WHERE id=?',(identifier,))
                     elif changed:c.execute('UPDATE auto_jobs SET skipped=skipped+1,processed=processed+1 WHERE id=?',(identifier,))
@@ -382,7 +385,7 @@ class Service:
             if self.manager.cancel.is_set():return None
             config=dict(config,execution_at_dispatch=execution,dispatched_at=db.now())
             with closing(ai.store(self.path)) as c:
-                c.execute("UPDATE auto_items SET state='calling',credential_id=?,request_config_json=?,updated_at=? WHERE id=?",
+                c.execute("UPDATE auto_items SET state='calling',credential_id=?,request_config_json=?,auto_retry_at=NULL,updated_at=? WHERE id=?",
                           (credential['id'] if credential else None,db.dumps(config),db.now(),item['id']));c.commit()
             self.manager.vault.mark(credential['id'] if credential else None,used=True)
         started=time.monotonic();usage,diagnostics={},None
@@ -420,9 +423,19 @@ class Service:
         except Exception as exc:
             message=(str(exc).replace(key,'[REDACTED]') if key else str(exc))[:1500]
             failure_usage={} if config.get('local_response_reuse') else getattr(exc,'usage',usage)
-            failure_diagnostics=getattr(exc,'diagnostics',diagnostics)
+            failure_diagnostics=getattr(exc,'diagnostics',diagnostics) or {}
             if config.get('local_response_reuse') and failure_diagnostics:
                 failure_diagnostics=dict(failure_diagnostics,response_reused_from=config['local_response_reuse'])
+            retry=auto_retry.classify(exc) if automatic_retry and not config.get('local_response_reuse') else None
+            retries=item['auto_retry_count']
+            ready_at=None
+            now=db.now()
+            if retry and retries<len(retry.delays):
+                delay=max(retry.delays[retries],auto_retry.retry_after_seconds(failure_diagnostics.get('retry_after')),
+                          self.unattended_cooldown if retry.cool_down else 0)
+                ready_at=time.time()+delay
+                failure_diagnostics=dict(failure_diagnostics,automatic_retry={'reason':retry.reason,'delay_s':delay,
+                    'sequence':retries+1,'ready_at':ready_at})
             with closing(ai.store(self.path)) as c:
                 c.execute('BEGIN IMMEDIATE');ai.update_auto_usage(c,item['id'],failure_usage)
                 limit=(failure_diagnostics or {}).get('provider_concurrency_limit')
@@ -430,27 +443,36 @@ class Service:
                     saved=json.loads(c.execute('SELECT config_json FROM auto_jobs WHERE id=?',(identifier,)).fetchone()[0])
                     cap=max(1,limit-1)
                     saved['provider_parallelism_cap']=min(saved.get('provider_parallelism_cap',cap),cap)
-                    saved['provider_limit_note']='接口回报并发上限 '+str(limit)+'，预留一个名额；恢复后生效'
+                    saved['provider_limit_note']='接口回报并发上限 '+str(limit)+'，按可用名额调度'
                     c.execute('UPDATE auto_jobs SET config_json=? WHERE id=?',(db.dumps(saved),identifier))
-                c.execute('UPDATE auto_jobs SET processed=processed+1,failures=failures+1,updated_at=? WHERE id=?',(db.now(),identifier))
                 c.execute("UPDATE auto_items SET state='error',error=?,usage_json=?,diagnostics_json=?,elapsed=?,updated_at=? WHERE id=?",
-                          (message,db.dumps(failure_usage),db.dumps(failure_diagnostics),time.monotonic()-started,db.now(),item['id']));c.commit()
+                          (message,db.dumps(failure_usage),db.dumps(failure_diagnostics),time.monotonic()-started,now,item['id']))
+                if ready_at is None:
+                    c.execute('UPDATE auto_jobs SET processed=processed+1,failures=failures+1,updated_at=? WHERE id=?',(now,identifier))
+                else:
+                    failed=c.execute('SELECT * FROM auto_items WHERE id=?',(item['id'],)).fetchone()
+                    self._enqueue_retry(c,failed,ready_at)
+                    c.execute('UPDATE auto_jobs SET retry_cooldown_until=max(retry_cooldown_until,?),updated_at=? WHERE id=?',
+                              (ready_at if retry.cool_down else 0,now,identifier))
+                c.commit()
             return exc
 
     def work(self,identifier,*,retry_ids=(),retry_config=None,retry_end_state='paused'):
         final,error,streak='paused',None,0
-        inflight={};exhausted=False;halt=False;cooldown_until=0.0
+        inflight={};exhausted=False;halt=False
         item_scope=' AND id IN (SELECT value FROM json_each(?))' if retry_ids else ''
         scope_args=(db.dumps(retry_ids),) if retry_ids else ()
         pool=ThreadPoolExecutor(max_workers=ai_parallel.MAX_WORKERS,thread_name_prefix='nmr-molecule')
         try:
             while True:
                 with closing(ai.store(self.path)) as c:
-                    config=json.loads(c.execute('SELECT config_json FROM auto_jobs WHERE id=?',(identifier,)).fetchone()[0])
+                    job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
+                config=json.loads(job['config_json'])
                 if retry_config is not None:
                     config=retry_config
+                automatic_retry=not retry_ids and job['scope'] in ('pending','partial','unlabeled')
                 limit=self.capacity(config)['effective_parallelism']
-                while not halt and not self.manager.cancel.is_set() and time.monotonic()>=cooldown_until:
+                while not halt and not self.manager.cancel.is_set():
                     with closing(ai.store(self.path)) as c:
                         job=c.execute('SELECT * FROM auto_jobs WHERE id=?',(identifier,)).fetchone()
                         excluded=tuple(inflight.values())
@@ -461,35 +483,36 @@ class Service:
                     if item:
                         if len(inflight)>=ai_parallel.MAX_WORKERS:break
                     else:
+                        now=time.time()
+                        if automatic_retry and now<job['retry_cooldown_until']:break
                         limit=self.capacity(config)['effective_parallelism']
                         if len(inflight)>=limit:break
                         with closing(ai.store(self.path)) as c:
-                            item=c.execute("SELECT * FROM auto_items WHERE job_id=? AND state='pending'"+item_scope+exclusion+' ORDER BY id LIMIT 1',(identifier,*scope_args,*excluded)).fetchone()
+                            item=c.execute("""SELECT * FROM auto_items WHERE job_id=? AND state='pending'
+                                AND (auto_retry_at IS NULL OR auto_retry_at<=?)"""+item_scope+exclusion+
+                                ' ORDER BY auto_retry_at IS NULL,auto_retry_at,id LIMIT 1',
+                                (identifier,now,*scope_args,*excluded)).fetchone()
                         if not item and not exhausted:
                             item=None if retry_ids else self._next(job)
                             if not item:exhausted=True
                     if not item:break
                     if self.manager.cancel.is_set():break
                     if item['state']=='pending' and not self.capacity(config)['dispatch_allowed']:break
-                    inflight[pool.submit(self._execute,item,config)]=item['id']
+                    inflight[pool.submit(self._execute,item,config,automatic_retry=automatic_retry)]=item['id']
                 if not inflight:
-                    remaining=cooldown_until-time.monotonic()
-                    if remaining>0 and not halt and not self.manager.cancel.is_set():
-                        self.manager.cancel.wait(remaining)
-                        continue
-                    if limit==0 and not exhausted and not halt and not self.manager.cancel.is_set():
-                        if retry_ids:
-                            with closing(ai.store(self.path)) as c:
-                                exhausted=not c.execute("SELECT 1 FROM auto_items WHERE job_id=? AND state='pending'"+item_scope+' LIMIT 1',
-                                                        (identifier,*scope_args)).fetchone()
-                        # Keep the job alive across peak hours, with no paid calls
-                        # and no cursor advancement. Cancellation remains immediate.
-                        if not exhausted:
-                            self.manager.cancel.wait(2)
-                            continue
-                    if not halt and not self.manager.cancel.is_set():
+                    if halt or self.manager.cancel.is_set():break
+                    with closing(ai.store(self.path)) as c:
+                        pending=c.execute("SELECT count(*),min(auto_retry_at) FROM auto_items WHERE job_id=? AND state='pending'"+item_scope,
+                                          (identifier,*scope_args)).fetchone()
+                    if not pending[0] and (exhausted or retry_ids):
                         final=retry_end_state if retry_ids else 'completed'
-                    break
+                        break
+                    # Remain alive while waiting for retries, API cooldown, or an allowed tariff window.
+                    now=time.time()
+                    delay=max(job['retry_cooldown_until']-now if automatic_retry else 0,
+                              (pending[1] or 0)-now if exhausted else 0)
+                    self.manager.cancel.wait(min(delay,2) if delay>0 and limit else .1 if limit else 2)
+                    continue
                 done,_=wait(inflight,timeout=.2,return_when=FIRST_COMPLETED)
                 for future in done:
                     item_id=inflight.pop(future)
@@ -499,18 +522,19 @@ class Service:
                             item=c.execute('SELECT * FROM auto_items WHERE id=?',(item_id,)).fetchone()
                         if item['state']=='received':self._publish(item,config)
                         if exc is None:streak=0
-                        elif isinstance(exc,ai.APIRequestCancelled):pass
+                        elif item['state']=='pending' or isinstance(exc,ai.APIRequestCancelled):pass
                         elif config.get('repair_policy') and (getattr(exc,'diagnostics',{}) or {}).get('application_send_started') is False and (getattr(exc,'diagnostics',{}) or {}).get('request_outcome_uncertain') is False:
                             # Preserve this exhausted, unsubmitted failure for
                             # explicit retry; it need not halt unrelated repairs.
                             pass
                         else:
                             streak+=1
-                            if not halt and not retry_ids and streak<3 and self.unattended_cooldown and job['scope']=='unlabeled' and self.transient_failure(exc):
-                                cooldown_until=time.monotonic()+self.unattended_cooldown
-                                self.cooldown=(identifier,cooldown_until)
-                            elif streak>=3 or ai.should_pause_batch(exc):
+                            retry=auto_retry.classify(exc) if automatic_retry else None
+                            pause=retry.pause_on_exhaustion if retry else ai.should_pause_batch(exc)
+                            if not halt and (streak>=3 or pause):
                                 halt=True;final='attention';error=item['error']
+                                if retry and item['auto_retry_count']:
+                                    error='自动重试已用完。'+(error or '')
                     except Exception as exc:
                         halt=True;final='attention';error=str(exc)[:1500]
                 # On failure, stop dispatch but retain results of already-issued
@@ -518,16 +542,9 @@ class Service:
         except Exception as exc:final,error='attention',str(exc)[:1500]
         finally:
             pool.shutdown(wait=True)
-            self.cooldown=None
             with closing(ai.store(self.path)) as c:
                 c.execute('UPDATE auto_jobs SET state=?,error=?,updated_at=? WHERE id=?',(final,error,db.now(),identifier));c.commit()
             with self.manager.lock:self.manager.active=None
-
-    @staticmethod
-    def transient_failure(exc):
-        diagnostics=getattr(exc,'diagnostics',{}) or {}
-        return (diagnostics.get('http_status') in (502,503,504,524) or
-                diagnostics.get('error_kind') in ('timeout','total_timeout','connection_reset','remote_disconnected','incomplete_read'))
 
     def status(self,identifier=None,result_state=None):
         if result_state not in (None,'','error','applied'):raise ValueError('结果筛选无效')
@@ -539,9 +556,17 @@ class Service:
             value=dict(job);value['config']=json.loads(value.pop('config_json'))
             value['usage']=json.loads(value.pop('usage_totals_json'))
             value['execution']=self.capacity(value['config'])
-            cooldown=self.cooldown
-            value['cooldown_s']=max(0,int(cooldown[1]-time.monotonic()+.999)) if cooldown and cooldown[0]==job['id'] else 0
+            now=time.time()
+            value['cooldown_s']=max(0,int(job['retry_cooldown_until']-now+.999)) if job['state']=='running' else 0
+            awaiting=c.execute("""SELECT count(*),min(auto_retry_at) FROM auto_items
+                WHERE job_id=? AND state='pending' AND auto_retry_at IS NOT NULL""",(job['id'],)).fetchone()
+            retry_reasons=c.execute("""SELECT json_extract(a.diagnostics_json,'$.automatic_retry.reason') AS reason,count(*)
+                FROM auto_items i JOIN auto_item_attempts a ON a.item_id=i.id
+                WHERE i.job_id=? AND reason IS NOT NULL GROUP BY reason ORDER BY count(*) DESC,reason""",(job['id'],))
+            value['auto_retry']={'waiting':awaiting[0],'by_reason':dict(retry_reasons),
+                'next_in_s':max(0,int(max(awaiting[1],job['retry_cooldown_until'])-now+.999)) if awaiting[1] else None}
             retrying_clause='''(i.state='error' OR (i.state IN ('pending','calling','responded','received')
+                AND i.auto_retry_count=0
                 AND EXISTS (SELECT 1 FROM auto_item_attempts a WHERE a.item_id=i.id)))'''
             resolved_clause='''NOT EXISTS (SELECT 1 FROM auto_items later
                 WHERE later.molecule_id=i.molecule_id AND later.state='done'
@@ -576,7 +601,7 @@ class Service:
                 value['counts'][state]=c.execute('SELECT count(*) FROM auto_items WHERE job_id=? AND state=?',(job['id'],state)).fetchone()[0]
             value['items']=[]
             for r in items:
-                row={k:r[k] for k in ('id','molecule_id','formula','state','error','elapsed','updated_at')}
+                row={k:r[k] for k in ('id','molecule_id','formula','state','error','elapsed','updated_at','auto_retry_at','auto_retry_count')}
                 row['publication']=json.loads(r['publication_json'] or '{}')
                 row['resolved_by']=({'job_id':r['resolved_job_id'],'name':r['resolved_job_name'] or ('任务 '+r['resolved_job_id'][:8]),'completed_at':r['resolved_at']}
                                     if r['state']=='error' and r['resolved_job_id'] else None)
@@ -637,6 +662,35 @@ class Service:
             (row['id'],attempt_no,row['state'],row['error'],row['usage_json'],row['diagnostics_json'],row['elapsed'],
              row['request_config_json'],row['raw_response_json'],row['output_json'],row['publication_json'],db.now()))
 
+    def _enqueue_retry(self, c, row, ready_at):
+        self._archive_failed_attempt(c, row)
+        # Usage stays in the aggregate and the archive. The next call starts from zero for this row.
+        c.execute("""UPDATE auto_items SET state='pending',error=NULL,usage_json=NULL,diagnostics_json=NULL,
+            elapsed=NULL,raw_response_json=NULL,request_config_json=NULL,auto_retry_at=?,auto_retry_count=auto_retry_count+1
+            WHERE id=?""", (ready_at, row['id']))
+
+    def prepare_resume_after_fix(self, identifier):
+        with self.manager.lock, closing(ai.store(self.path)) as c, c:
+            if self.manager.active:
+                raise ValueError('请等当前任务停止后再准备恢复')
+            c.execute('BEGIN IMMEDIATE')
+            job = c.execute("SELECT error FROM auto_jobs WHERE id=? AND state='attention'", (identifier,)).fetchone()
+            if not job:
+                raise ValueError('只有处于「需要处理错误」的任务需要执行 --resume-after-fix')
+            requeued = 0
+            if job['error'] == auto_retry.LEGACY_STREAM_ERROR:
+                # Limit migration recovery to one dispatch group on the server.
+                rows = c.execute("""SELECT * FROM auto_items WHERE job_id=? AND state='error'
+                    AND error=? AND auto_retry_count=0 ORDER BY updated_at DESC,id DESC LIMIT 3""",
+                    (identifier, auto_retry.LEGACY_STREAM_ERROR)).fetchall()
+                for row in rows:
+                    self._enqueue_retry(c, row, time.time())
+                    requeued += 1
+            c.execute("""UPDATE auto_jobs SET state='paused',error=NULL,updated_at=?,
+                failures=max(0,failures-?),processed=max(0,processed-?) WHERE id=?""",
+                (db.now(), requeued, requeued, identifier))
+        return requeued
+
     def retry_failed(self,identifier,item_id=None,mode='failed'):
         """Retry failed items in place; specialized partial reruns remain separate jobs."""
         if item_id is not None and (type(item_id) is not int or item_id<1):raise ValueError('失败项目编号无效')
@@ -687,7 +741,8 @@ class Service:
                             continue
                         c.execute('''UPDATE auto_items SET state='pending',output_json=NULL,usage_json=NULL,error=NULL,
                             diagnostics_json=NULL,publication_json=NULL,credential_id=NULL,elapsed=NULL,
-                            request_config_json=?,raw_response_json=NULL,updated_at=? WHERE id=? AND state='error' ''',
+                            request_config_json=?,raw_response_json=NULL,auto_retry_at=NULL,auto_retry_count=0,
+                            updated_at=? WHERE id=? AND state='error' ''',
                             (db.dumps(dict(retry_config,retry_source_item_id=r['id'])),now,r['id']))
                     if selected_rows:
                         c.execute("UPDATE auto_jobs SET state='running',error=NULL,config_json=?,updated_at=? WHERE id=?",

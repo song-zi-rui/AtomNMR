@@ -10,7 +10,6 @@ from contextlib import closing
 from functools import partial
 
 from .ai_annotation import DEFAULTS, Manager, normalize_base_url, request_api
-from .server import App,Handler,ThreadingHTTPServer
 from . import api_tls, core as db
 from .paths import artifacts_root
 
@@ -85,6 +84,8 @@ def check_api(config):
 
 
 def main():
+    from .server import App,Handler,ThreadingHTTPServer
+
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db',type=Path,required=True);p.add_argument('--config',type=Path,required=True)
     p.add_argument('--port',type=int,default=8767);p.add_argument('--check-api',action='store_true')
